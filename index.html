@@ -233,7 +233,7 @@
       <label style="margin-top:10px;">Profil hinzufügen</label>
       <div class="row">
         <select id="selAddPrinter" style="margin:0;"></select>
-        <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addPrinterProfile()">+</button>
+        <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addPrinterProfile()">Hinzufügen</button>
       </div>
     </div>
 
@@ -395,6 +395,11 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Backup
     "Datensicherung": "Backup",
+    "Hinzufügen": "Add",
+    "Bitte zuerst einen Namen eingeben.": "Please enter a name first.",
+    "„{v}“ ist schon in der Liste.": "“{v}” is already in the list.",
+    "„{v}“ hinzugefügt.": "“{v}” added.",
+    "Bitte Code und Namen des Druckers eingeben.": "Please enter the printer's code and name.",
     "Spulengröße": "Spool size",
     "Kein Leergewicht für {b} {s} bekannt.": "No empty weight known for {b} {s}.",
     "Leergewicht {b} {s}: {g} g (Verwaltung)": "Empty weight {b} {s}: {g} g (settings)",
@@ -1230,7 +1235,7 @@
           <select id="addPrFw" style="width:auto; margin:0;">
             ${Object.entries(FW_LABELS).map(([k, l]) => `<option value="${k}">${l.split(' ')[0]}</option>`).join('')}
           </select>
-          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addPrinter()">+</button>
+          <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addPrinter()">${t('Hinzufügen')}</button>
         </div>
         <p class="hint" style="margin-bottom:0;">${t('Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.')}</p>
       </div>`;
@@ -1255,7 +1260,7 @@
         <div class="row">
           <input type="color" id="addColHex" value="#808080" style="width:56px; height:42px; margin:0;">
           <input type="text" id="addColName" placeholder="${t('z.B. Galaxy Lila')}" style="flex:1; margin:0;">
-          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addColor()">+</button>
+          <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addColor()">${t('Hinzufügen')}</button>
         </div>
       </div>`;
     const simpleCard = (key, title, ph) => `
@@ -1265,7 +1270,7 @@
           <div class="list-row"><span>${esc(v)}</span><button class="btn-danger btn-small" onclick="deleteListItem('${key}','${esc(v)}')">✕</button></div>`).join('')}
         <div class="row" style="margin-top:10px;">
           <input type="text" id="add_${key}" placeholder="${t(ph)}" style="flex:1; margin:0;">
-          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('${key}')">+</button>
+          <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('${key}')">${t('Hinzufügen')}</button>
         </div>
       </div>`;
     // Brands: collapsible rows with one empty-weight field per spool size.
@@ -1296,7 +1301,7 @@
         }).join('')}
         <div class="row" style="margin-top:10px;">
           <input type="text" id="add_vendors" placeholder="${t('z.B. Extrudr')}" style="flex:1; margin:0;">
-          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('vendors')">+</button>
+          <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('vendors')">${t('Hinzufügen')}</button>
         </div>
       </div>`;
     html += simpleCard('materials', 'Materialien', 'z.B. PETG HF');
@@ -1308,11 +1313,12 @@
   function addPrinter() {
     const code = $('addPrCode').value.trim().toUpperCase();
     const name = $('addPrName').value.trim();
-    if (!code || !name) return;
-    if (!/^[A-Z0-9]+$/.test(code)) { alert(t("Code nur aus Buchstaben/Ziffern.")); return; }
+    if (!code || !name) { updateLog(t('Bitte Code und Namen des Druckers eingeben.'), true); return; }
+    if (!/^[A-Z0-9]+$/.test(code)) { updateLog(t("Code nur aus Buchstaben/Ziffern."), true); return; }
     if (settings.printers[code] && !confirm(t('Code {code} existiert schon. Überschreiben?', { code }))) return;
     settings.printers[code] = { name, fw: $('addPrFw').value };
     saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
+    updateLog('✔ ' + t('„{v}“ hinzugefügt.', { v: name + ' (' + code + ')' }));
   }
 
   // Profiles already written to spools stay there; only the printer entry is removed.
@@ -1334,12 +1340,13 @@
   function addColor() {
     const name = $('addColName').value.trim();
     const hex = $('addColHex').value.toUpperCase();
-    if (!name) { alert(t("Bitte einen Namen für die Farbe eingeben.")); return; }
+    if (!name) { updateLog(t("Bitte einen Namen für die Farbe eingeben."), true); return; }
     const same = colorNameForHex(hex);
     if (same && same !== name && !confirm(t('Der Farbwert {hex} heißt schon "{same}". Trotzdem zusätzlich als "{name}" anlegen?', { hex, same, name }))) return;
     if (settings.colors[name] && !confirm(t('"{name}" existiert schon ({hex}). Farbwert überschreiben?', { name, hex: settings.colors[name] }))) return;
     settings.colors[name] = hex;
     saveSettings(); refreshLists(); renderSettings();
+    updateLog('✔ ' + t('„{v}“ hinzugefügt.', { v: name }));
   }
 
   // Store/delete a fixed empty weight for brand + size (empty field = delete).
@@ -1351,12 +1358,15 @@
     saveSettings();
   }
 
+  // Add a brand/material. Gives visible feedback in every case (pop-up at the bottom).
   function addListItem(key) {
     const v = $('add_' + key).value.trim();
-    if (!v || settings[key].includes(v)) return;
+    if (!v) { updateLog(t('Bitte zuerst einen Namen eingeben.'), true); return; }
+    if (settings[key].includes(v)) { updateLog(t('„{v}“ ist schon in der Liste.', { v }), true); return; }
     settings[key].push(v);
     settings[key].sort((a, b) => a.localeCompare(b));
     saveSettings(); refreshLists(); renderSettings();
+    updateLog('✔ ' + t('„{v}“ hinzugefügt.', { v }));
   }
 
   // Colour picker in the spool form changed -> fill in the matching colour name if known.
@@ -1403,6 +1413,13 @@
 
   // One global listener instead of one per field ("event delegation"): any
   // input inside the spool tab updates the tag-size display.
+  // Enter key in an "add" field (Settings, add profile) = tap the "Add" button in the same row.
+  // On the phone keyboard this is the ✓ / → key.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+    const btn = e.target.closest('.row') && e.target.closest('.row').querySelector('.btn-add');
+    if (btn) { e.preventDefault(); btn.click(); }
+  });
   document.addEventListener('input', e => { if (e.target.closest('#scanner') && e.target.type !== 'checkbox') updateSizeInfo(); });
 
   // ===================================================================
