@@ -140,12 +140,16 @@
     #toast.ok { background: #14432c; border-left-color: #2ecc71; }
     #toast.err { background: #5a1a20; border-left-color: var(--danger); }
     #log { padding: 10px; background: var(--bg-input); border-left: 4px solid var(--primary); font-size: 13px; margin-bottom: 12px; min-height: 20px; }
+    /* Tag status dot: green = tag is up to date, red = changes not written, grey = unknown */
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+    .dot.ok { background: #2ecc71; } .dot.changed { background: var(--danger); } .dot.unknown { background: #777; }
     #sizeInfo { font-size: 12px; color: var(--muted); margin: -4px 0 10px; }
     .printer-profile { border: 1px solid #444; padding: 10px; border-radius: 6px; margin-bottom: 10px; background: #1a1a1a; }
     .printer-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 6px; flex-wrap: wrap; }
     .swatch { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 1px solid #666; vertical-align: middle; margin-right: 6px; flex: none; }
     .inventory-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     /* <details> = collapsible box (used in Help and for brand empty weights) */
+    details.settings-card > summary { font-size: 16px; padding: 4px 0; }
     details.card summary { font-weight: bold; cursor: pointer; padding: 2px 0; }
     details.card[open] summary { margin-bottom: 8px; }
     details.card ol, details.card ul { padding-left: 20px; margin: 6px 0; line-height: 1.45; font-size: 14px; }
@@ -181,7 +185,7 @@
           </select>
         </div>
         <div>
-          <label>Spulen-ID</label>
+          <label>Spulen-ID <span id="idDot"></span></label>
           <input type="text" id="tagId" readonly style="font-family: monospace; font-weight: bold;">
         </div>
       </div>
@@ -243,7 +247,8 @@
         <input type="checkbox" id="chkSummary" onchange="updateSizeInfo()"> Zusätzliche Klartext-Zeile (~70 Bytes, nur bei wenigen Profilen)
       </label>
       <div id="sizeInfo"></div>
-      <button class="btn-success" onclick="saveToTag()">Auf NFC-Tag schreiben</button>
+      <div id="tagState" style="font-size:13px; margin:-4px 0 10px;"></div>
+      <button class="btn-success" id="btnWrite" onclick="saveToTag()">Auf NFC-Tag schreiben</button>
       <button class="btn-secondary" onclick="saveLocalOnly()">Nur lokal speichern</button>
     </div>
   </div>
@@ -396,6 +401,17 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Backup
     "Datensicherung": "Backup",
+    "Tag ist aktuell": "Tag is up to date",
+    "Änderungen noch nicht auf dem Tag": "Changes not written to the tag yet",
+    "Noch nicht auf einen Tag geschrieben": "Not written to a tag yet",
+    "Tag-Stand unbekannt": "Tag status unknown",
+    "Schreiben abbrechen": "Cancel writing",
+    "Schreiben abgebrochen.": "Writing cancelled.",
+    "Schreibe… Handy am Tag lassen.": "Writing… keep the phone on the tag.",
+    "Auf diesem Tag ist Spule {id} ({name}).\n\nMit Spule {cur} überschreiben?": "This tag holds spool {id} ({name}).\n\nOverwrite with spool {cur}?",
+    "Auf diesem Tag ist eine fremde Spule ({name}).\n\nÜberschreiben?": "This tag holds a foreign spool ({name}).\n\nOverwrite?",
+    "Der Tag enthält andere Daten (keine Spule).\n\nÜberschreiben?": "The tag contains other data (not a spool).\n\nOverwrite?",
+    "Tag konnte nicht gelesen werden (evtl. neu und leer).\n\nTrotzdem beschreiben?": "The tag could not be read (maybe new and empty).\n\nWrite anyway?",
     "aus der Verwaltung": "from Settings",
     "von deiner Spule {id} ({name})": "from your spool {id} ({name})",
     "Richtwerte {type}": "generic {type} values",
@@ -592,9 +608,12 @@
   //   nw        nominal size g (250/500/…) – phone only, NOT on the tag
   //   cfg       { printerCode: { t, b, f, pa, mf, rd, rs } }
   //   updated   ISO timestamp of last save (inventory only)
+  //   tag       the tag content (JSON text) last read from / written to this
+  //             spool's tag – phone only. If toTagJSON(spool) differs from it,
+  //             the spool has changes that are not on the tag yet (red dot).
   function emptySpool() {
     return { id: "", brand: "", material: "", cn: "", hex: "#000000", abr: 0,
-             tmin: 0, tmax: 0, bed: 0, ew: 0, r: 0, nw: 0, cfg: {} };
+             tmin: 0, tmax: 0, bed: 0, ew: 0, r: 0, nw: 0, cfg: {}, tag: "" };
   }
   // cur = the spool currently shown in the form (the "work record").
   let cur = emptySpool();
@@ -1016,7 +1035,7 @@
 
   // Live display "Tag usage: n / 504 bytes". Runs on every keystroke in the spool tab.
   function updateSizeInfo() {
-    if (!cur.id) { $('sizeInfo').textContent = ""; return; }
+    if (!cur.id) { $('sizeInfo').textContent = ""; $('tagState').innerHTML = ""; $('idDot').innerHTML = ""; return; }
     collectForm();
     const json = JSON.stringify(toTagJSON(cur));
     const withSum = $('chkSummary').checked;
@@ -1024,6 +1043,20 @@
     const cap = parseInt($('tagType').value);
     $('sizeInfo').textContent = t('Tag-Belegung: {size} / {cap} Bytes', { size, cap }) + (size > cap ? '  ⚠ ' + t('zu groß') : '');
     $('sizeInfo').style.color = size > cap ? 'var(--danger)' : 'var(--muted)';
+    showTagState(json);
+  }
+
+  // Compare what WOULD be written now with what is known to be on the tag.
+  function tagStateOf(spool, json) {
+    if (!spool.tag) return 'new';
+    return spool.tag === (json || JSON.stringify(toTagJSON(spool))) ? 'ok' : 'changed';
+  }
+  function showTagState(json) {
+    const st = tagStateOf(cur, json);
+    const txt = { ok: t('Tag ist aktuell'), changed: t('Änderungen noch nicht auf dem Tag'), new: t('Noch nicht auf einen Tag geschrieben') }[st];
+    const cls = st === 'ok' ? 'ok' : 'changed';
+    $('tagState').innerHTML = `<span class="dot ${cls}"></span>${esc(txt)}`;
+    $('idDot').innerHTML = `<span class="dot ${cls}" title="${esc(txt)}"></span>`;
   }
 
   // ---------------- Printer profiles on the current spool ----------------
@@ -1133,12 +1166,20 @@
     updateLog(t('Spule {id} lokal gespeichert (Tag nicht verändert).', { id: cur.id }));
   }
 
-  // "Write to NFC tag". Order of events:
-  //   1. build the tag object, check it fits (size check before touching the tag)
-  //   2. hand the records to Web NFC; the browser waits until a tag is near
-  //   3. only on success update the inventory, so it always mirrors the tag.
-  // "await" suspends here until the write finished or failed (-> catch).
+  // "Write to NFC tag" – with a check of the tag that is held to the phone.
+  // Order of events:
+  //   1. build the tag records, check they fit (before touching any tag)
+  //   2. make sure the scanner runs and remember the write as "pending"
+  //   3. the user holds the phone to a tag -> onreading() fires; instead of
+  //      loading the tag into the form, checkBeforeWrite() inspects it:
+  //        empty tag / same spool ID  -> write immediately
+  //        other spool or other data  -> ask before overwriting
+  //   4. write; on success update the inventory, so it mirrors the tag.
+  // While a write is pending the button reads "Cancel writing".
+  let pendingWrite = null;   // { records, json, size, cap } or null
+
   async function saveToTag() {
+    if (pendingWrite) { cancelWrite(); return; }   // second tap = cancel
     if (!validate()) return;
     const json = JSON.stringify(toTagJSON(cur));
     const text = $('chkSummary').checked ? summaryText(cur) : null;
@@ -1148,17 +1189,52 @@
       updateLog(t('Zu groß für den Tag ({size}/{cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.', { size, cap }), true);
       return;
     }
-    if (!("NDEFReader" in window)) { updateLog(t("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig."), true); return; }
-
+    if (!(await ensureScanner())) return;
     const records = [{ recordType: "mime", mediaType: "application/json", data: new TextEncoder().encode(json) }];
     if (text) records.push({ recordType: "text", lang: "en", data: text });
+    pendingWrite = { records, json, size, cap };
+    $('btnWrite').textContent = t('Schreiben abbrechen');
+    $('btnWrite').className = 'btn-danger';
     updateLog(t('Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }), false, true);
+  }
+
+  function cancelWrite(msg) {
+    pendingWrite = null;
+    $('btnWrite').textContent = t('Auf NFC-Tag schreiben');
+    $('btnWrite').className = 'btn-success';
+    if (msg !== false) updateLog(msg || t('Schreiben abgebrochen.'));
+  }
+
+  // Called by onreading while a write is pending. `records` = current tag content.
+  async function checkBeforeWrite(records) {
+    const w = pendingWrite;
+    const data = parseSpoolRecords(records);
+    let question = null;
+    if (data && data.id && data.id !== cur.id) {
+      question = t('Auf diesem Tag ist Spule {id} ({name}).\n\nMit Spule {cur} überschreiben?',
+                   { id: data.id, name: [data.brand, data.type, data.subtype].filter(Boolean).join(' '), cur: cur.id });
+    } else if (data && !data.id) {
+      question = t('Auf diesem Tag ist eine fremde Spule ({name}).\n\nÜberschreiben?', { name: [data.brand, data.type].filter(Boolean).join(' ') });
+    } else if (!data && records.length) {
+      question = t('Der Tag enthält andere Daten (keine Spule).\n\nÜberschreiben?');
+    }
+    // empty tag or same spool ID: no question
+    if (question && !confirm(question)) { cancelWrite(); return; }
+    await doWrite(w);
+  }
+
+  // The actual write. The tag must still be near the phone.
+  async function doWrite(w) {
+    updateLog(t('Schreibe… Handy am Tag lassen.'), false, true);
     try {
-      await (nfcReader || new NDEFReader()).write({ records });
-      // Write succeeded -> bring the inventory entry in line with the tag.
-      storeLocal();
-      updateLog('✔ ' + t('Auf Tag geschrieben ({size}/{cap} Bytes).', { size, cap }));
+      await nfcReader.write({ records: w.records });
+      cancelWrite(false);
+      cur.tag = w.json;            // this is now on the tag
+      storeLocal();                // inventory mirrors the tag
+      showTagState();
+      updateLog('✔ ' + t('Auf Tag geschrieben ({size}/{cap} Bytes).', { size: w.size, cap: w.cap }));
     } catch (err) {
+      cancelWrite(false);
       updateLog(t('NFC-Schreibfehler: {err}', { err: err.message || err }), true);
     }
   }
@@ -1168,47 +1244,65 @@
   // only, and only on https:// or localhost). One reader object for the whole
   // session; scan() starts listening, afterwards the browser calls
   // onreading() for every tag that comes near – an event handler, not a poll.
+  // The handler acts as a switch: pending write -> check the tag, else load it.
   let nfcReader = null;
 
-  // "Read NFC tag" button. Starts the scanner once; it then stays active,
-  // so several spools can be read in a row.
-  async function readNFC() {
-    if (!("NDEFReader" in window)) { updateLog(t("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig."), true); return; }
-    if (nfcReader) { updateLog(t("Scanner aktiv – Handy an die Spule halten…")); return; }
+  // Start the scanner once (needs a user tap the first time). Returns true if running.
+  async function ensureScanner() {
+    if (!("NDEFReader" in window)) { updateLog(t("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig."), true); return false; }
+    if (nfcReader) return true;
     try {
       nfcReader = new NDEFReader();
       await nfcReader.scan();
-      updateLog(t("Scanner aktiv – Handy an die Spule halten…"), false, true);
-      nfcReader.onreadingerror = () => updateLog(t("Tag nicht lesbar – nochmal versuchen."), true);
-      nfcReader.onreading = ev => handleTag(ev.message.records);
+      nfcReader.onreading = ev => pendingWrite ? checkBeforeWrite(ev.message.records) : handleTag(ev.message.records);
+      // Unreadable tag. While writing this is typically a brand-new, unformatted
+      // tag – ask, because it might also be a spool tag that just read badly.
+      nfcReader.onreadingerror = () => {
+        if (!pendingWrite) { updateLog(t("Tag nicht lesbar – nochmal versuchen."), true); return; }
+        if (confirm(t('Tag konnte nicht gelesen werden (evtl. neu und leer).\n\nTrotzdem beschreiben?'))) doWrite(pendingWrite);
+        else cancelWrite();
+      };
+      return true;
     } catch (err) {
       nfcReader = null;
       updateLog(t("NFC-Fehler: ") + (err.message || err), true);
+      return false;
     }
   }
 
-  // Called with the records of a detected tag. Looks for the first record that
-  // contains JSON in our/OpenSpool format, converts it into `cur` and shows it.
-  function handleTag(records) {
-    let data = null;
+  // "Read NFC tag" button. Starts the scanner; it then stays active,
+  // so several spools can be read in a row.
+  async function readNFC() {
+    if (pendingWrite) cancelWrite(false);
+    if (await ensureScanner()) updateLog(t("Scanner aktiv – Handy an die Spule halten…"), false, true);
+  }
+
+  // Find the first record with JSON in our/OpenSpool format. Returns the object or null.
+  function parseSpoolRecords(records) {
     for (const rec of records) {
       try {
         const isJsonMime = rec.recordType === "mime" && /json/i.test(rec.mediaType || "");
         if (!isJsonMime && rec.recordType !== "text") continue;
-        const txt = new TextDecoder(rec.encoding || "utf-8").decode(rec.data);
-        const o = JSON.parse(txt);
-        if (o && (o.protocol === "openspool" || o.cfg)) { data = o; break; }
+        const o = JSON.parse(new TextDecoder(rec.encoding || "utf-8").decode(rec.data));
+        if (o && (o.protocol === "openspool" || o.cfg)) return o;
       } catch (e) { /* not JSON – try the next record */ }
     }
+    return null;
+  }
+
+  // Called with the records of a detected tag (no write pending): convert into `cur` and show it.
+  function handleTag(records) {
+    const data = parseSpoolRecords(records);
     if (!data) { updateLog(t(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben."), true); return; }
 
     cur = fromTagJSON(data);
+    cur.tag = cur.id ? JSON.stringify(toTagJSON(cur)) : "";   // what is on the tag right now
     // Known spool: take phone-only data (spool size, colour name) from the inventory.
     const inv = spools.find(s => s.id === cur.id);
     let note = "";
     if (inv && inv.nw) { cur.nw = inv.nw; $('selSize').value = String(inv.nw); }
     if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
-    if (!cur.id) { cur.id = generateID(); note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
+    if (!cur.id) { cur.id = generateID(); cur.tag = ""; note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
     $('numScaleWt').value = "";
     renderForm();
     switchTab('scanner', document.querySelector('.tab-btn'));
@@ -1251,11 +1345,19 @@
             <span class="swatch" style="background:${esc(s.hex)}"></span>
             <div>
               <strong>${esc(s.brand)} ${esc(s.material)}${s.cn ? ' – ' + esc(s.cn) : ''}</strong>${s.abr ? ' ⚠' : ''}<br>
-              <span class="hint" style="font-size:12px;">ID ${esc(s.id)} · ${t('Rest')} ${esc(s.r)} g · ${esc(Object.keys(s.cfg || {}).join(', ') || t('keine Profile'))}</span>
+              <span class="hint" style="font-size:12px;">${invDot(s)}ID ${esc(s.id)} · ${t('Rest')} ${esc(s.r)} g · ${esc(Object.keys(s.cfg || {}).join(', ') || t('keine Profile'))}</span>
             </div>
           </div>
           <button class="btn-danger btn-small" onclick="deleteSpool(${i})">✕</button>
         </div>`).join('');
+  }
+
+  // Status dot per inventory entry. Entries saved by older app versions have no
+  // "tag" field -> grey (unknown), otherwise green = tag up to date, red = not written.
+  function invDot(s) {
+    if (!('tag' in s)) return `<span class="dot unknown" title="${esc(t('Tag-Stand unbekannt'))}"></span>`;
+    const st = tagStateOf(s);
+    return `<span class="dot ${st === 'ok' ? 'ok' : 'changed'}" title="${esc(st === 'ok' ? t('Tag ist aktuell') : t('Änderungen noch nicht auf dem Tag'))}"></span>`;
   }
 
   // Tap on an inventory entry -> copy it into cur and switch to the spool tab.
@@ -1362,6 +1464,14 @@
   }
 
   // ---------------- Settings tab ----------------
+  // Which settings cards are expanded. Kept in RAM (and localStorage) so a card
+  // stays open after adding an entry – adding re-renders the whole card list.
+  const openCards = new Set(loadJSON('fnfc_openCards', []));
+  function toggleCard(el) {
+    if (el.open) openCards.add(el.dataset.card); else openCards.delete(el.dataset.card);
+    localStorage.setItem('fnfc_openCards', JSON.stringify([...openCards]));
+  }
+
   // Builds the printer, colour, brand and material cards as one HTML string.
   function renderSettings() {
     const listCard = (key, title, items, render) => `
@@ -1372,8 +1482,8 @@
 
     let html = '';
     html += `
-      <div class="card">
-        <h4>${t('Drucker')}</h4>
+      <details class="card settings-card" data-card="printers" ${openCards.has('printers') ? 'open' : ''} ontoggle="toggleCard(this)">
+        <summary><b>${t('Drucker')}</b> <span class="hint">(${Object.keys(settings.printers).length})</span></summary>
         ${Object.entries(settings.printers).map(([code, p]) => `
           <div class="list-row">
             <span><b>${esc(code)}</b> ${esc(p.name)}<br><span class="hint" style="font-size:12px;">${esc(FW_LABELS[p.fw] || p.fw)}</span></span>
@@ -1388,12 +1498,12 @@
           <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addPrinter()">${t('Hinzufügen')}</button>
         </div>
         <p class="hint" style="margin-bottom:0;">${t('Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.')}</p>
-      </div>`;
+      </details>`;
 
     // Colours: each row has its own colour picker (onchange -> setColorHex).
     html += `
-      <div class="card">
-        <h4>${t('Farben')}</h4>
+      <details class="card settings-card" data-card="colors" ${openCards.has('colors') ? 'open' : ''} ontoggle="toggleCard(this)">
+        <summary><b>${t('Farben')}</b> <span class="hint">(${Object.keys(settings.colors).length})</span></summary>
         ${Object.entries(settings.colors).map(([n, h]) => {
           const ok = isHex(h);
           return `
@@ -1412,13 +1522,13 @@
           <input type="text" id="addColName" placeholder="${t('z.B. Galaxy Lila')}" style="flex:1; margin:0;">
           <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addColor()">${t('Hinzufügen')}</button>
         </div>
-      </div>`;
+      </details>`;
     // Brands: collapsible rows with one empty-weight field per spool size.
     // Learned values appear as grey placeholder "≈ 110" (not stored, just shown).
     const SIZES = [250, 500, 750, 1000, 2000, 3000];
     html += `
-      <div class="card">
-        <h4>${t('Hersteller')}</h4>
+      <details class="card settings-card" data-card="vendors" ${openCards.has('vendors') ? 'open' : ''} ontoggle="toggleCard(this)">
+        <summary><b>${t('Hersteller')}</b> <span class="hint">(${settings.vendors.length})</span></summary>
         <p class="hint" style="margin-top:0;">${t('Antippen, um Leergewichte je Spulengröße festzulegen. Grau mit ≈ = aus deinen Spulen gelernt.')}</p>
         ${settings.vendors.map(v => {
           const known = SIZES.filter(sz => (settings.emptyWeights[v] || {})[sz] || suggestEW(v, sz));
@@ -1443,15 +1553,15 @@
           <input type="text" id="add_vendors" placeholder="${t('z.B. Extrudr')}" style="flex:1; margin:0;">
           <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('vendors')">${t('Hinzufügen')}</button>
         </div>
-      </div>`;
+      </details>`;
     // Materials: collapsible rows with editable fixed values. Placeholders
     // ("≈ 230") show what would be used without a fixed value: learned from
     // your spools (any brand) or the generic starting values.
     const MAT_FIELDS = [['tmin', 'Düse min °C'], ['tmax', 'Düse max °C'], ['bed', 'Bett °C'],
                         ['f', 'Flow'], ['pa', 'PA'], ['mf', 'Max mm³/s'], ['rd', 'Retr. mm'], ['rs', 'Retr. mm/s']];
     html += `
-      <div class="card">
-        <h4>${t('Materialien')}</h4>
+      <details class="card settings-card" data-card="materials" ${openCards.has('materials') ? 'open' : ''} ontoggle="toggleCard(this)">
+        <summary><b>${t('Materialien')}</b> <span class="hint">(${settings.materials.length})</span></summary>
         <p class="hint" style="margin-top:0;">${t('Antippen, um Standardwerte festzulegen. Grau mit ≈ = Vorschlag (gelernt oder Richtwert), wird ohne eigenen Eintrag verwendet.')}</p>
         ${settings.materials.map(mat => {
           const man = manualFor(mat), gen = genericFor(mat) || {};
@@ -1481,7 +1591,7 @@
           <input type="text" id="add_materials" placeholder="${t('z.B. PETG HF')}" style="flex:1; margin:0;">
           <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('materials')">${t('Hinzufügen')}</button>
         </div>
-      </div>`;
+      </details>`;
     html += `<p class="hint">${t('Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.')}</p>`;
     $('settingsSections').innerHTML = html;
   }
@@ -1792,7 +1902,8 @@
           <li><b>Spule → Neue Spule</b> tippen. Die App vergibt eine 4-stellige ID.</li>
           <li>Hersteller, Material (z.B. „PLA CF“ = Typ PLA, Variante CF) und Farbe eintragen. Temperaturen, Bett und „abrasiv“ schlägt die App passend zum Material vor – aus der Verwaltung, deinen bisherigen Spulen oder allgemeinen Richtwerten. Alles bleibt änderbar.</li>
           <li>Unter <b>Druckerprofile</b> für jeden Drucker ein Profil hinzufügen. Es wird mit den Werten deiner letzten Spule gleichen Materials auf diesem Drucker vorbefüllt; bei Bedarf anpassen.</li>
-          <li><b>Auf NFC-Tag schreiben</b> tippen, dann das Handy an den Tag halten (Mitte der Rückseite), bis „✔ Auf Tag geschrieben“ erscheint. Das Inventar wird dabei automatisch angeglichen.</li>
+          <li><b>Auf NFC-Tag schreiben</b> tippen, dann das Handy an den Tag halten (Mitte der Rückseite), bis „✔ Auf Tag geschrieben“ erscheint. Die App liest den Tag vorher: Ist dort eine andere Spule oder etwas anderes gespeichert, fragt sie vor dem Überschreiben. Das Inventar wird danach automatisch angeglichen.</li>
+          <li>Der Punkt neben der Spulen-ID zeigt den Stand: <span class="dot ok"></span> Tag ist aktuell, <span class="dot changed"></span> Änderungen noch nicht auf dem Tag. Im Inventar: grau = Stand unbekannt (ältere Einträge).</li>
         </ol>
         <p class="hint">Die Anzeige „Tag-Belegung“ zeigt, wie voll der Tag wird. Ist er zu voll, verhindert die App das Schreiben.</p></details>
       <details class="card"><summary>3. Spule lesen</summary>
@@ -1843,7 +1954,8 @@
           <li>Tap <b>Spool → New spool</b>. The app assigns a 4-character ID.</li>
           <li>Enter brand, material (e.g. “PLA CF” = type PLA, variant CF) and colour. Temperatures, bed and “abrasive” are suggested for the material – from Settings, your previous spools or generic values. Everything stays editable.</li>
           <li>Under <b>Printer profiles</b>, add a profile for each printer. It is pre-filled with the values of your last spool of the same material on that printer; adjust if needed.</li>
-          <li>Tap <b>Write to NFC tag</b>, then hold the phone to the tag (middle of the back) until “✔ Written to tag” appears.</li>
+          <li>The dot next to the spool ID shows the state: <span class="dot ok"></span> tag up to date, <span class="dot changed"></span> changes not written yet. In the inventory, grey = unknown (older entries).</li>
+          <li>Tap <b>Write to NFC tag</b>, then hold the phone to the tag (middle of the back) until “✔ Written to tag” appears. The app reads the tag first and asks before overwriting a different spool or other data.</li>
         </ol>
         <p class="hint">“Tag usage” shows how full the tag gets. If it is too full, the app won't write.</p></details>
       <details class="card"><summary>3. Read a spool</summary>
