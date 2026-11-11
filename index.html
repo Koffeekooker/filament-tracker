@@ -321,6 +321,7 @@
       <div id="modalText" class="hint" style="font-size:14px; white-space:pre-line; margin-bottom:14px;"></div>
       <button id="modalA" class="btn-success"></button>
       <button id="modalB" class="btn-secondary"></button>
+      <button id="modalC" class="btn-danger" style="display:none;"></button>
     </div>
   </div>
 
@@ -415,6 +416,12 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Backup
     "Datensicherung": "Backup",
+    "Ungespeicherte Änderungen": "Unsaved changes",
+    "Spule {id} wurde geändert, aber weder gespeichert noch auf den Tag geschrieben.": "Spool {id} was changed but neither saved nor written to the tag.",
+    "Weiter bearbeiten": "Keep editing",
+    "Lokal speichern und fortfahren": "Save locally and continue",
+    "Änderungen verwerfen": "Discard changes",
+    "Weiter bearbeiten – Änderungen sind noch nicht gespeichert.": "Keep editing – changes are not saved yet.",
     "Farbe": "Colour",
     "Spule {id}: Inventar und Tag unterscheiden sich": "Spool {id}: inventory and tag differ",
     "Inventar → Tag:": "Inventory → tag:",
@@ -809,7 +816,8 @@
 
   // "New spool" button: empty record with fresh ID and sensible defaults.
   // The last used spool size is preselected (you mostly use 0.25/0.5 kg).
-  function createNewSpool() {
+  async function createNewSpool() {
+    if (!(await guardUnsaved())) return;
     cur = emptySpool();
     cur.id = generateID();
     cur.nw = parseInt(localStorage.getItem('fnfc_lastSize')) || 1000;
@@ -825,7 +833,8 @@
   }
 
   // "Load demo": a complete example spool, for testing without NFC (e.g. on the Mac).
-  function loadDemoTag() {
+  async function loadDemoTag() {
+    if (!(await guardUnsaved())) return;
     cur = fromTagJSON({
       protocol: "openspool", version: "1.0", brand: "Polymaker", type: "PLA", subtype: "CF",
       color_hex: "#1A1A1A", min_temp: "210", max_temp: "230", bed_min_temp: 60, bed_max_temp: 60,
@@ -1031,6 +1040,7 @@
     updateAddPrinterDropdown();
     renderPrinterCards();
     updateSizeInfo();
+    formDirty = false;   // freshly loaded = nothing unsaved
   }
 
   // Input fields -> cur ("read the record back from the screen").
@@ -1096,6 +1106,7 @@
     collectForm();
     const sug = suggestProfile(cur.brand, cur.material, code);
     cur.cfg[code] = sug.p;
+    formDirty = true;
     updateAddPrinterDropdown();
     renderPrinterCards();
     updateSizeInfo();
@@ -1105,6 +1116,7 @@
   function removePrinterProfile(code) {
     if (!confirm(t('Profil {code} von dieser Spule entfernen?', { code }))) return;
     delete cur.cfg[code];
+    formDirty = true;
     updateAddPrinterDropdown();
     renderPrinterCards();
     updateSizeInfo();
@@ -1151,6 +1163,7 @@
   // ---------------- Saving ----------------
   // Copy cur into the inventory: replace the entry with the same ID, or append.
   function storeLocal() {
+    formDirty = false;
     collectForm();
     if (cur.nw) localStorage.setItem('fnfc_lastSize', String(cur.nw));
     const entry = clone(cur);
@@ -1315,17 +1328,45 @@
   // when one of the two buttons is tapped – so the caller can simply write
   //   const choice = await askChoice(...);
   // like a blocking READLN, while the browser stays responsive.
-  function askChoice(title, text, labelA, labelB) {
+  // An optional third button (labelC, red) is shown only if a label is given.
+  function askChoice(title, text, labelA, labelB, labelC) {
     return new Promise(resolve => {
       $('modalTitle').textContent = title;
       $('modalText').textContent = text;
       $('modalA').textContent = labelA;
       $('modalB').textContent = labelB;
+      $('modalC').textContent = labelC || '';
+      $('modalC').style.display = labelC ? '' : 'none';
       $('modal').style.display = 'flex';
       const done = choice => { $('modal').style.display = 'none'; resolve(choice); };
       $('modalA').onclick = () => done('a');
       $('modalB').onclick = () => done('b');
+      $('modalC').onclick = () => done('c');
     });
+  }
+
+  // ---------------- Protection of unsaved edits ----------------
+  // formDirty = the form holds changes that are neither saved locally nor
+  // written to the tag. Set by any edit in the spool tab, cleared when a spool
+  // is loaded into the form (renderForm) or saved (storeLocal).
+  // Before anything replaces the form content (tag comes near, inventory entry
+  // tapped, new spool, demo), guardUnsaved() asks what to do.
+  // Returns true = go ahead, false = stay with the current edits.
+  let formDirty = false;
+  async function guardUnsaved() {
+    if (!formDirty || !cur.id) return true;
+    tagBusy = true;                      // ignore further tag reads while asking
+    const c = await askChoice(
+      t('Ungespeicherte Änderungen'),
+      t('Spule {id} wurde geändert, aber weder gespeichert noch auf den Tag geschrieben.', { id: cur.id }),
+      t('Weiter bearbeiten'),
+      t('Lokal speichern und fortfahren'),
+      t('Änderungen verwerfen'));
+    tagBusy = false;
+    if (c === 'a') { updateLog(t('Weiter bearbeiten – Änderungen sind noch nicht gespeichert.')); return false; }
+    if (c === 'b') { if (!validate()) return false; storeLocal(); }
+    formDirty = false;
+    return true;
   }
 
   // List the differences between two spool records (inventory vs. tag) as
@@ -1355,6 +1396,7 @@
     if (tagBusy) return;
     const data = parseSpoolRecords(records);
     if (!data) { updateLog(t(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben."), true); return; }
+    if (!(await guardUnsaved())) return;   // don't silently replace unsaved edits
 
     cur = fromTagJSON(data);
     cur.tag = cur.id ? JSON.stringify(toTagJSON(cur)) : "";   // what is on the tag right now
@@ -1457,8 +1499,9 @@
   }
 
   // Tap on an inventory entry -> copy it into cur and switch to the spool tab.
-  function loadFromInventory(i) {
+  async function loadFromInventory(i) {
     if (!spools[i]) return;
+    if (!(await guardUnsaved())) { switchTab('scanner', document.querySelector('.tab-btn')); return; }
     cur = Object.assign(emptySpool(), clone(spools[i]));
     delete cur.updated;
     $('numScaleWt').value = "";
@@ -1814,7 +1857,14 @@
     const btn = e.target.closest('.row') && e.target.closest('.row').querySelector('.btn-add');
     if (btn) { e.preventDefault(); btn.click(); }
   });
-  document.addEventListener('input', e => { if (e.target.closest('#scanner') && e.target.type !== 'checkbox') updateSizeInfo(); });
+  // The same listener also marks the form as "changed" (formDirty) – except
+  // for the tag-type selector and the plain-text option, which are not spool data.
+  document.addEventListener('input', e => {
+    if (!e.target.closest('#scanner')) return;
+    if (!['tagType', 'chkSummary'].includes(e.target.id)) formDirty = true;
+    if (e.target.type !== 'checkbox') updateSizeInfo();
+  });
+  document.addEventListener('change', e => { if (e.target.id === 'chkAbrasive') { formDirty = true; updateSizeInfo(); } });
 
   // ===================================================================
   // OPTIONAL: AUTO BACKUP VIA filament_server.py (Termux on the phone)

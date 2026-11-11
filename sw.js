@@ -16,7 +16,7 @@
 // The browser compares sw.js byte by byte; a changed file triggers
 // install/activate of the new version, which drops the old cache.
 // =====================================================================
-const CACHE = "filament-v15";
+const CACHE = "filament-v16";
 // Files stored for offline use ("./" = the folder itself, i.e. the start page).
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
