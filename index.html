@@ -196,22 +196,23 @@
     <div class="card" style="border-left: 3px solid var(--primary);">
       <h4>Filament</h4>
       <label>Hersteller</label>
-      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo(); applyEWSuggestion()">
+      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo(); applyEWSuggestion(); applyMaterialSuggestion()">
       <label>Material (Typ + Variante, z.B. "PLA CF")</label>
-      <input type="text" id="inMaterial" list="dlMaterials" placeholder="z.B. PLA CF" oninput="updateSizeInfo()">
+      <input type="text" id="inMaterial" list="dlMaterials" placeholder="z.B. PLA CF" oninput="updateSizeInfo(); applyMaterialSuggestion()">
       <label>Farbe (Name + Farbwert)</label>
       <div class="row">
         <input type="text" id="inColorName" list="dlColors" placeholder="z.B. Schwarz" oninput="colorNameChanged()">
         <input type="color" id="inColorHex" value="#000000" style="margin-bottom:12px;" oninput="colorHexChanged()">
       </div>
       <label style="display:flex; align-items:center;">
-        <input type="checkbox" id="chkAbrasive"> Abrasiv (gehärtete Düse nötig)
+        <input type="checkbox" id="chkAbrasive" onchange="this.dataset.auto='0'"> Abrasiv (gehärtete Düse nötig)
       </label>
       <div class="grid-3">
-        <div><label>Düse min °C</label><input type="number" id="numTmin" inputmode="numeric"></div>
-        <div><label>Düse max °C</label><input type="number" id="numTmax" inputmode="numeric"></div>
-        <div><label>Bett °C</label><input type="number" id="numBed" inputmode="numeric"></div>
+        <div><label>Düse min °C</label><input type="number" id="numTmin" inputmode="numeric" oninput="this.dataset.auto='0'"></div>
+        <div><label>Düse max °C</label><input type="number" id="numTmax" inputmode="numeric" oninput="this.dataset.auto='0'"></div>
+        <div><label>Bett °C</label><input type="number" id="numBed" inputmode="numeric" oninput="this.dataset.auto='0'"></div>
       </div>
+      <p id="matHint" class="hint" style="margin:-6px 0 10px; font-size:12px;"></p>
       <div class="grid-3">
         <div><label>Spulengröße</label>
           <select id="selSize" onchange="applyEWSuggestion()">
@@ -395,6 +396,14 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Backup
     "Datensicherung": "Backup",
+    "aus der Verwaltung": "from Settings",
+    "von deiner Spule {id} ({name})": "from your spool {id} ({name})",
+    "Richtwerte {type}": "generic {type} values",
+    "Standardwerte": "default values",
+    "Vorschlag: {src} – frei änderbar.": "Suggested: {src} – feel free to change.",
+    "Profil {printer} vorbefüllt: {src}.": "Profile {printer} pre-filled: {src}.",
+    "Antippen, um Standardwerte festzulegen. Grau mit ≈ = Vorschlag (gelernt oder Richtwert), wird ohne eigenen Eintrag verwendet.": "Tap to set default values. Grey with ≈ = suggestion (learned or generic), used when you enter nothing.",
+    "Abrasiv": "Abrasive", "automatisch": "automatic", "ja": "yes", "nein": "no", "eigene Werte": "own values",
     "Hinzufügen": "Add",
     "Bitte zuerst einen Namen eingeben.": "Please enter a name first.",
     "„{v}“ ist schon in der Liste.": "“{v}” is already in the list.",
@@ -547,6 +556,7 @@
   let settings = loadJSON('fnfc_settings', null) || clone(DEFAULT_SETTINGS);
   for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
   if (!settings.emptyWeights || typeof settings.emptyWeights !== 'object') settings.emptyWeights = {};
+  if (!settings.materialDefaults || typeof settings.materialDefaults !== 'object') settings.materialDefaults = {};
   // Repair: predefined colours without a valid hex value get the default value back.
   for (const n in settings.colors) {
     if (!/^#[0-9a-f]{6}$/i.test(String(settings.colors[n] || '')) && DEFAULT_SETTINGS.colors[n]) settings.colors[n] = DEFAULT_SETTINGS.colors[n];
@@ -763,11 +773,14 @@
     cur = emptySpool();
     cur.id = generateID();
     cur.nw = parseInt(localStorage.getItem('fnfc_lastSize')) || 1000;
-    cur.r = cur.nw; cur.tmin = 200; cur.tmax = 230; cur.bed = 60;
+    cur.r = cur.nw;
     $('numScaleWt').value = "";
     renderForm();
-    $('numEmptyWt').dataset.auto = '1';   // empty weight may be filled by a suggestion
+    // All suggestible fields of a NEW spool may be filled automatically
+    // (data-auto = "1") until the user types into them.
+    for (const id of ['numEmptyWt', 'numTmin', 'numTmax', 'numBed', 'chkAbrasive']) $(id).dataset.auto = '1';
     applyEWSuggestion();
+    applyMaterialSuggestion();
     updateLog(t("Neue Spule angelegt. Werte ausfüllen, dann speichern."));
   }
 
@@ -824,6 +837,135 @@
       : t('Leergewicht {b} {s}: {g} g (gelernt aus {n} Spule(n))', { b: brand, s: sizeLabel(size), g: sug.g, n: sug.n });
   }
 
+  // ===================================================================
+  // MATERIAL SUGGESTIONS
+  // -------------------------------------------------------------------
+  // When brand/material are entered, the app proposes values from four
+  // sources. Each FIELD is taken from the first source that has a value
+  // for it (so a partial entry in Settings still works):
+  //
+  //   Spool values (nozzle min/max, bed, abrasive):
+  //     1. Settings → Materials (your fixed values, always win)
+  //     2. your most recent spool with the same brand + material
+  //     3. your most recent spool with the same material (any brand)
+  //     4. GENERIC_MATERIALS below (rough starting values)
+  //
+  //   Printer profile (when a profile is added to the spool):
+  //     1. your most recent spool with same brand + material on THIS printer
+  //     2. … same material on this printer (any brand)
+  //     3. Settings → Materials (profile start values, printer-independent)
+  //     4. GENERIC_MATERIALS
+  //   Here your own calibrated profile comes first, because it belongs to
+  //   that exact printer – the Settings values apply to all printers.
+  // ===================================================================
+
+  // Rough generic starting values per base material (first word of the
+  // material name). Deliberately conservative; your own values replace them.
+  // Fields: nozzle range, bed, max volumetric speed, retraction mm / mm/s.
+  const GENERIC_MATERIALS = {
+    PLA:  { tmin: 190, tmax: 220, bed: 60,  mf: 15,  rd: 0.8, rs: 35 },
+    PETG: { tmin: 230, tmax: 250, bed: 80,  mf: 10,  rd: 0.8, rs: 30 },
+    ABS:  { tmin: 240, tmax: 260, bed: 100, mf: 12,  rd: 0.8, rs: 35 },
+    ASA:  { tmin: 240, tmax: 260, bed: 100, mf: 12,  rd: 0.8, rs: 35 },
+    TPU:  { tmin: 210, tmax: 230, bed: 50,  mf: 3.5, rd: 0.4, rs: 20 },
+    PA:   { tmin: 250, tmax: 280, bed: 80,  mf: 8,   rd: 0.8, rs: 30 },
+    PC:   { tmin: 260, tmax: 290, bed: 110, mf: 8,   rd: 0.8, rs: 30 },
+    HIPS: { tmin: 230, tmax: 250, bed: 100, mf: 10,  rd: 0.8, rs: 35 },
+    PVA:  { tmin: 190, tmax: 210, bed: 60,  mf: 8,   rd: 1.0, rs: 25 },
+    PP:   { tmin: 220, tmax: 250, bed: 85,  mf: 8,   rd: 0.8, rs: 30 }
+  };
+  // Fillers that wear out brass nozzles: carbon/glass fibre, glow-in-the-dark, glitter.
+  const ABRASIVE_RE = /(\bCF\b|\bGF\b|carbon|glass|glow|glitzer|glitter|sparkle)/i;
+
+  // Case-insensitive text comparison ("pla cf" = "PLA CF").
+  const sameText = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+  // Generic row for a material: exact base type ("PETG"), else longest
+  // prefix match ("PA12" -> "PA"). null if unknown.
+  function genericFor(material) {
+    const type = splitMaterial(material).type;
+    if (!type) return null;
+    if (GENERIC_MATERIALS[type]) return { ...GENERIC_MATERIALS[type], type };
+    const key = Object.keys(GENERIC_MATERIALS).filter(k => type.startsWith(k)).sort((a, b) => b.length - a.length)[0];
+    return key ? { ...GENERIC_MATERIALS[key], type: key } : null;
+  }
+
+  // Fixed values from Settings → Materials for this material name (or {}).
+  function manualFor(material) {
+    const key = Object.keys(settings.materialDefaults).find(k => sameText(k, material));
+    return key ? settings.materialDefaults[key] : {};
+  }
+
+  // Most recently saved spool matching a condition (other than the current one).
+  function latestSpool(cond) {
+    return spools.filter(s => s.id !== cur.id && cond(s))
+                 .sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')))[0] || null;
+  }
+
+  // Spool-level suggestion. Returns { v: {tmin,tmax,bed,abr}, label } or null.
+  function suggestSpoolValues(brand, material) {
+    if (!material) return null;
+    const manual = manualFor(material);
+    const bm = brand ? latestSpool(s => sameText(s.brand, brand) && sameText(s.material, material)) : null;
+    const m = latestSpool(s => sameText(s.material, material));
+    const gen = genericFor(material);
+    // Ordered source list: [label, record or null]
+    const sources = [
+      [t('aus der Verwaltung'), Object.keys(manual).length ? manual : null],
+      [bm && t('von deiner Spule {id} ({name})', { id: bm.id, name: bm.brand + ' ' + bm.material }), bm],
+      [m && t('von deiner Spule {id} ({name})', { id: m.id, name: m.brand + ' ' + m.material }), m],
+      [gen && t('Richtwerte {type}', { type: gen.type }), gen]
+    ];
+    const v = {}, used = new Set();
+    for (const f of ['tmin', 'tmax', 'bed']) {
+      for (const [label, src] of sources) {
+        if (src && num(src[f]) > 0) { v[f] = num(src[f]); used.add(label); break; }
+      }
+    }
+    // Abrasive: Settings value ("1"/"0") > learned spool > generic name check.
+    if (manual.abr === 1 || manual.abr === 0) v.abr = manual.abr;
+    else if (bm) v.abr = bm.abr ? 1 : 0;
+    else if (m) v.abr = m.abr ? 1 : 0;
+    else v.abr = ABRASIVE_RE.test(material) ? 1 : 0;
+    if (!used.size) return null;
+    return { v, label: [...used].join(' + ') };
+  }
+
+  // Put spool-level suggestions into fields that are still "auto" or empty.
+  // Called on every change of brand or material.
+  function applyMaterialSuggestion() {
+    const brand = $('inVendor').value.trim(), material = $('inMaterial').value.trim();
+    const sug = suggestSpoolValues(brand, material), hint = $('matHint');
+    if (!sug) { hint.textContent = ''; return; }
+    const fields = { tmin: 'numTmin', tmax: 'numTmax', bed: 'numBed' };
+    let changed = false;
+    for (const [f, id] of Object.entries(fields)) {
+      const el = $(id);
+      if (sug.v[f] && (el.dataset.auto === '1' || el.value === '')) { el.value = sug.v[f]; el.dataset.auto = '1'; changed = true; }
+    }
+    if ($('chkAbrasive').dataset.auto === '1') $('chkAbrasive').checked = !!sug.v.abr;
+    if (changed || $('chkAbrasive').dataset.auto === '1') hint.textContent = t('Vorschlag: {src} – frei änderbar.', { src: sug.label });
+    updateSizeInfo();
+  }
+
+  // Printer-profile suggestion for printer `code`. Returns { p, label }.
+  function suggestProfile(brand, material, code) {
+    const bm = latestSpool(s => s.cfg && s.cfg[code] && sameText(s.brand, brand) && sameText(s.material, material));
+    if (bm && material) return { p: clone(bm.cfg[code]), label: t('von deiner Spule {id} ({name})', { id: bm.id, name: bm.brand + ' ' + bm.material }) };
+    const m = latestSpool(s => s.cfg && s.cfg[code] && sameText(s.material, material));
+    if (m && material) return { p: clone(m.cfg[code]), label: t('von deiner Spule {id} ({name})', { id: m.id, name: m.brand + ' ' + m.material }) };
+    // Composed from Settings → generic → defaults, field by field.
+    const manual = manualFor(material), gen = genericFor(material) || {};
+    const p = clone(DEFAULT_PROFILE);
+    for (const f of ['f', 'pa', 'mf', 'rd', 'rs']) {
+      if (manual[f] !== undefined) p[f] = manual[f];
+      else if (gen[f] !== undefined) p[f] = gen[f];
+    }
+    if (cur.tmin && cur.tmax) p.t = Math.round((cur.tmin + cur.tmax) / 2);   // middle of the nozzle range
+    const label = Object.keys(manual).length ? t('aus der Verwaltung') : gen.type ? t('Richtwerte {type}', { type: gen.type }) : t('Standardwerte');
+    return { p, label };
+  }
+
   // cur -> input fields ("display the record"). The inverse is collectForm().
   function renderForm() {
     $('tagId').value = cur.id;
@@ -836,7 +978,9 @@
     $('numTmax').value = cur.tmax || "";
     $('numBed').value = cur.bed || "";
     $('numEmptyWt').value = cur.ew || "";
-    $('numEmptyWt').dataset.auto = '0';   // never auto-overwrite a loaded value
+    // Never auto-overwrite values of a loaded spool.
+    for (const id of ['numEmptyWt', 'numTmin', 'numTmax', 'numBed', 'chkAbrasive']) $(id).dataset.auto = '0';
+    $('matHint').textContent = '';
     $('selSize').value = String(cur.nw || 1000);
     $('numNetWt').value = cur.r || "";
     updateAddPrinterDropdown();
@@ -890,12 +1034,13 @@
     if (!cur.id) { updateLog(t("Erst eine Spule lesen oder neu anlegen."), true); return; }
     const code = $('selAddPrinter').value;
     if (!code) return;
-    const p = clone(DEFAULT_PROFILE);
-    if (cur.tmin && cur.tmax) p.t = Math.round((cur.tmin + cur.tmax) / 2);
-    cur.cfg[code] = p;
+    collectForm();
+    const sug = suggestProfile(cur.brand, cur.material, code);
+    cur.cfg[code] = sug.p;
     updateAddPrinterDropdown();
     renderPrinterCards();
     updateSizeInfo();
+    updateLog(t('Profil {printer} vorbefüllt: {src}.', { printer: (settings.printers[code] || {}).name || code, src: sug.label }));
   }
 
   function removePrinterProfile(code) {
@@ -1263,16 +1408,6 @@
           <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addColor()">${t('Hinzufügen')}</button>
         </div>
       </div>`;
-    const simpleCard = (key, title, ph) => `
-      <div class="card">
-        <h4>${t(title)}</h4>
-        ${settings[key].map(v => `
-          <div class="list-row"><span>${esc(v)}</span><button class="btn-danger btn-small" onclick="deleteListItem('${key}','${esc(v)}')">✕</button></div>`).join('')}
-        <div class="row" style="margin-top:10px;">
-          <input type="text" id="add_${key}" placeholder="${t(ph)}" style="flex:1; margin:0;">
-          <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('${key}')">${t('Hinzufügen')}</button>
-        </div>
-      </div>`;
     // Brands: collapsible rows with one empty-weight field per spool size.
     // Learned values appear as grey placeholder "≈ 110" (not stored, just shown).
     const SIZES = [250, 500, 750, 1000, 2000, 3000];
@@ -1304,7 +1439,44 @@
           <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('vendors')">${t('Hinzufügen')}</button>
         </div>
       </div>`;
-    html += simpleCard('materials', 'Materialien', 'z.B. PETG HF');
+    // Materials: collapsible rows with editable fixed values. Placeholders
+    // ("≈ 230") show what would be used without a fixed value: learned from
+    // your spools (any brand) or the generic starting values.
+    const MAT_FIELDS = [['tmin', 'Düse min °C'], ['tmax', 'Düse max °C'], ['bed', 'Bett °C'],
+                        ['f', 'Flow'], ['pa', 'PA'], ['mf', 'Max mm³/s'], ['rd', 'Retr. mm'], ['rs', 'Retr. mm/s']];
+    html += `
+      <div class="card">
+        <h4>${t('Materialien')}</h4>
+        <p class="hint" style="margin-top:0;">${t('Antippen, um Standardwerte festzulegen. Grau mit ≈ = Vorschlag (gelernt oder Richtwert), wird ohne eigenen Eintrag verwendet.')}</p>
+        ${settings.materials.map(mat => {
+          const man = manualFor(mat), gen = genericFor(mat) || {};
+          const learned = latestSpool(s => sameText(s.material, mat)) || {};
+          const ph = f => { const v = learned[f] || gen[f] || (f === 'f' ? DEFAULT_PROFILE.f : undefined); return v ? '≈ ' + v : ''; };
+          const abrSel = man.abr === 1 ? '1' : man.abr === 0 ? '0' : '';
+          const autoAbr = ABRASIVE_RE.test(mat) ? t('ja') : t('nein');
+          return `
+          <details class="list-row" style="display:block;">
+            <summary style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+              <span>${esc(mat)}<span class="hint" style="font-size:12px;">${Object.keys(man).length ? ' · ' + t('eigene Werte') : ''}</span></span>
+              <button class="btn-danger btn-small" onclick="event.preventDefault(); deleteListItem('materials','${esc(mat)}')">✕</button>
+            </summary>
+            <div class="grid-4" style="margin-top:8px;">
+              ${MAT_FIELDS.map(([f, label]) => `<div><label>${t(label)}</label><input type="number" inputmode="decimal" step="any"
+                value="${man[f] ?? ''}" placeholder="${ph(f)}" onchange="setMaterialDefault('${esc(mat)}', '${f}', this.value)" style="margin-bottom:6px;"></div>`).join('')}
+            </div>
+            <label>${t('Abrasiv')}</label>
+            <select onchange="setMaterialDefault('${esc(mat)}', 'abr', this.value)" style="margin-bottom:4px;">
+              <option value="" ${abrSel === '' ? 'selected' : ''}>${t('automatisch')} (${autoAbr})</option>
+              <option value="1" ${abrSel === '1' ? 'selected' : ''}>${t('ja')}</option>
+              <option value="0" ${abrSel === '0' ? 'selected' : ''}>${t('nein')}</option>
+            </select>
+          </details>`;
+        }).join('')}
+        <div class="row" style="margin-top:10px;">
+          <input type="text" id="add_materials" placeholder="${t('z.B. PETG HF')}" style="flex:1; margin:0;">
+          <button class="btn-primary btn-small btn-add" style="padding:10px 14px; white-space:nowrap;" onclick="addListItem('materials')">${t('Hinzufügen')}</button>
+        </div>
+      </div>`;
     html += `<p class="hint">${t('Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.')}</p>`;
     $('settingsSections').innerHTML = html;
   }
@@ -1347,6 +1519,16 @@
     settings.colors[name] = hex;
     saveSettings(); refreshLists(); renderSettings();
     updateLog('✔ ' + t('„{v}“ hinzugefügt.', { v: name }));
+  }
+
+  // Store/delete one fixed value of a material (empty field = delete, i.e. back to suggestion).
+  function setMaterialDefault(material, field, value) {
+    const d = settings.materialDefaults[material] = settings.materialDefaults[material] || {};
+    const empty = String(value).trim() === '';
+    if (empty) delete d[field];
+    else d[field] = field === 'abr' ? (value === '1' ? 1 : 0) : num(value);
+    if (!Object.keys(d).length) delete settings.materialDefaults[material];
+    saveSettings();
   }
 
   // Store/delete a fixed empty weight for brand + size (empty field = delete).
@@ -1403,6 +1585,7 @@
       settings = data.settings;
       for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
       if (!settings.emptyWeights) settings.emptyWeights = {};
+      if (!settings.materialDefaults) settings.materialDefaults = {};
       spools = dedupeSpools(data.spools);
       saveSettings(); saveSpools(); initApp();
       sendSnapshot(true);
@@ -1602,8 +1785,8 @@
       <details class="card"><summary>2. Neue Spule anlegen und beschreiben</summary>
         <ol>
           <li><b>Spule → Neue Spule</b> tippen. Die App vergibt eine 4-stellige ID.</li>
-          <li>Hersteller, Material (z.B. „PLA CF“ = Typ PLA, Variante CF), Farbe und Temperaturbereich eintragen.</li>
-          <li>Unter <b>Druckerprofile</b> für jeden Drucker ein Profil hinzufügen und die kalibrierten Werte eintragen.</li>
+          <li>Hersteller, Material (z.B. „PLA CF“ = Typ PLA, Variante CF) und Farbe eintragen. Temperaturen, Bett und „abrasiv“ schlägt die App passend zum Material vor – aus der Verwaltung, deinen bisherigen Spulen oder allgemeinen Richtwerten. Alles bleibt änderbar.</li>
+          <li>Unter <b>Druckerprofile</b> für jeden Drucker ein Profil hinzufügen. Es wird mit den Werten deiner letzten Spule gleichen Materials auf diesem Drucker vorbefüllt; bei Bedarf anpassen.</li>
           <li><b>Auf NFC-Tag schreiben</b> tippen, dann das Handy an den Tag halten (Mitte der Rückseite), bis „✔ Auf Tag geschrieben“ erscheint. Das Inventar wird dabei automatisch angeglichen.</li>
         </ol>
         <p class="hint">Die Anzeige „Tag-Belegung“ zeigt, wie voll der Tag wird. Ist er zu voll, verhindert die App das Schreiben.</p></details>
@@ -1653,8 +1836,8 @@
       <details class="card"><summary>2. Create and write a new spool</summary>
         <ol>
           <li>Tap <b>Spool → New spool</b>. The app assigns a 4-character ID.</li>
-          <li>Enter brand, material (e.g. “PLA CF” = type PLA, variant CF), colour and temperature range.</li>
-          <li>Under <b>Printer profiles</b>, add a profile for each printer and enter your calibrated values.</li>
+          <li>Enter brand, material (e.g. “PLA CF” = type PLA, variant CF) and colour. Temperatures, bed and “abrasive” are suggested for the material – from Settings, your previous spools or generic values. Everything stays editable.</li>
+          <li>Under <b>Printer profiles</b>, add a profile for each printer. It is pre-filled with the values of your last spool of the same material on that printer; adjust if needed.</li>
           <li>Tap <b>Write to NFC tag</b>, then hold the phone to the tag (middle of the back) until “✔ Written to tag” appears.</li>
         </ol>
         <p class="hint">“Tag usage” shows how full the tag gets. If it is too full, the app won't write.</p></details>
