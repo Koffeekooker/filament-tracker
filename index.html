@@ -196,9 +196,9 @@
     <div class="card" style="border-left: 3px solid var(--primary);">
       <h4>Filament</h4>
       <label>Hersteller</label>
-      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo(); applyEWSuggestion(); applyMaterialSuggestion()">
+      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo(); applyEWSuggestion(); applyMaterialSuggestion()" onchange="applyEWSuggestion(); applyMaterialSuggestion()">
       <label>Material (Typ + Variante, z.B. "PLA CF")</label>
-      <input type="text" id="inMaterial" list="dlMaterials" placeholder="z.B. PLA CF" oninput="updateSizeInfo(); applyMaterialSuggestion()">
+      <input type="text" id="inMaterial" list="dlMaterials" placeholder="z.B. PLA CF" oninput="updateSizeInfo(); applyMaterialSuggestion()" onchange="applyMaterialSuggestion()">
       <label>Farbe (Name + Farbwert)</label>
       <div class="row">
         <input type="text" id="inColorName" list="dlColors" placeholder="z.B. Schwarz" oninput="colorNameChanged()">
@@ -896,6 +896,11 @@
     return key ? settings.materialDefaults[key] : {};
   }
 
+  // Older app versions pre-filled every new spool with 200–230 °C / bed 60 °C.
+  // Spools still carrying exactly these placeholder values say nothing about
+  // the material, so they are not used as a learning source for temperatures.
+  const isLegacyPlaceholder = s => num(s.tmin) === 200 && num(s.tmax) === 230 && num(s.bed) === 60;
+
   // Most recently saved spool matching a condition (other than the current one).
   function latestSpool(cond) {
     return spools.filter(s => s.id !== cur.id && cond(s))
@@ -906,8 +911,8 @@
   function suggestSpoolValues(brand, material) {
     if (!material) return null;
     const manual = manualFor(material);
-    const bm = brand ? latestSpool(s => sameText(s.brand, brand) && sameText(s.material, material)) : null;
-    const m = latestSpool(s => sameText(s.material, material));
+    const bm = brand ? latestSpool(s => !isLegacyPlaceholder(s) && sameText(s.brand, brand) && sameText(s.material, material)) : null;
+    const m = latestSpool(s => !isLegacyPlaceholder(s) && sameText(s.material, material));
     const gen = genericFor(material);
     // Ordered source list: [label, record or null]
     const sources = [
@@ -1450,7 +1455,7 @@
         <p class="hint" style="margin-top:0;">${t('Antippen, um Standardwerte festzulegen. Grau mit ≈ = Vorschlag (gelernt oder Richtwert), wird ohne eigenen Eintrag verwendet.')}</p>
         ${settings.materials.map(mat => {
           const man = manualFor(mat), gen = genericFor(mat) || {};
-          const learned = latestSpool(s => sameText(s.material, mat)) || {};
+          const learned = latestSpool(s => !isLegacyPlaceholder(s) && sameText(s.material, mat)) || {};
           const ph = f => { const v = learned[f] || gen[f] || (f === 'f' ? DEFAULT_PROFILE.f : undefined); return v ? '≈ ' + v : ''; };
           const abrSel = man.abr === 1 ? '1' : man.abr === 0 ? '0' : '';
           const autoAbr = ABRASIVE_RE.test(mat) ? t('ja') : t('nein');
