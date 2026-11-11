@@ -1,34 +1,46 @@
 #!/usr/bin/env python3
 """
-Filament NFC – lokaler Server mit automatischer Datensicherung
-==============================================================
-Ersetzt "python -m http.server". Liefert die App aus (gleicher Ordner wie
-dieses Skript) und nimmt Sicherungen entgegen:
+Filament NFC – optional local server with automatic backup (for Termux)
+=======================================================================
+NOT needed when the app runs from GitHub Pages. Only if you start the app
+on the phone via Termux instead: then this replaces "python -m http.server".
 
-  backups/journal-JJJJ-MM.jsonl   inkrementell: jede Änderung eine Zeile
-  backups/snapshot-JJJJ-MM-TT.json  täglicher Vollstand (die letzten 30 bleiben)
+It does two things:
+  1. Serve the app files (same folder as this script) like a web server.
+  2. Accept backups from the app via a tiny HTTP API:
+       POST /api/journal   append change entries (incremental)
+       POST /api/snapshot  store a full copy of the data
+       GET  /api/state     latest snapshot + later journal entries (restore)
+       GET  /api/ping      "is the server there?"
+
+Files written:
+  backups/journal-YYYY-MM.jsonl     one JSON object per line per change
+                                    (append-only, like a transaction log)
+  backups/snapshot-YYYY-MM-DD.json  daily full copy, the last 30 are kept
 
 Start in Termux:
   cd ~/storage/downloads/filament
   python filament_server.py
-
-Dann in Chrome: http://localhost:8080/index.html
-Nur vom Handy selbst erreichbar (127.0.0.1), nicht aus dem WLAN.
+Then open in Chrome: http://localhost:8080/index.html
+Only reachable from the phone itself (bound to 127.0.0.1), not from the LAN.
 """
-import json
-import os
+import json      # read/write JSON text
+import os        # file/path operations
 import glob
 from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
+# ---- configuration -------------------------------------------------------
 PORT = 8080
 BASE = os.path.dirname(os.path.abspath(__file__))
 BACKUP_DIR = os.path.join(BASE, "backups")
 KEEP_SNAPSHOTS = 30
-os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)   # create backups/ if missing
 
 
 def latest_snapshot():
+    """Return the newest snapshot as a dict, or None. File names contain the
+    date as YYYY-MM-DD, so alphabetical order = chronological order."""
     files = sorted(glob.glob(os.path.join(BACKUP_DIR, "snapshot-*.json")))
     if not files:
         return None
@@ -37,6 +49,8 @@ def latest_snapshot():
 
 
 def journal_entries():
+    """Generator ("yield"): delivers all journal entries of all months one by
+    one, oldest first, without loading everything into memory at once."""
     for path in sorted(glob.glob(os.path.join(BACKUP_DIR, "journal-*.jsonl"))):
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -45,11 +59,14 @@ def journal_entries():
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError:
-                        pass  # halbe Zeile (z.B. Akku leer) überspringen
+                        pass  # skip a half-written line (e.g. battery died mid-write)
 
 
 def current_state():
-    """Neuester Snapshot + alle späteren Journal-Einträge = aktueller Stand."""
+    """Reconstruct the current state: newest snapshot, then replay every journal
+    entry written after it (same principle as a database restore from a full
+    backup plus transaction log). Spools are kept in a dict keyed by ID, so a
+    later entry for the same spool simply replaces the earlier one."""
     snap = latest_snapshot() or {"settings": None, "spools": [], "exported": ""}
     since = snap.get("exported", "")
     spools = {s["id"]: s for s in snap.get("spools", []) if s.get("id")}
@@ -70,10 +87,14 @@ def current_state():
 
 
 class Handler(SimpleHTTPRequestHandler):
+    """Request handler. The base class already serves files from a directory;
+    we only add the /api/ endpoints. Python calls do_GET/do_POST for each
+    incoming HTTP request (one thread per request, see ThreadingHTTPServer)."""
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=BASE, **kw)
 
     def _json(self, code, obj):
+        """Send a JSON answer with HTTP status code (200 = OK, 400 = bad request …)."""
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -83,6 +104,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        """API reads; everything else falls through to normal file serving."""
         if self.path == "/api/ping":
             snaps = sorted(glob.glob(os.path.join(BACKUP_DIR, "snapshot-*.json")))
             return self._json(200, {"ok": True,
@@ -92,6 +114,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        """API writes. The request body is JSON sent by the app's fetch()."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -99,7 +122,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": str(e)})
 
         if self.path == "/api/journal":
-            # Liste von Änderungen anhängen (App schickt ggf. mehrere nachgeholte auf einmal)
+            # Append entries; the app may send several queued ones at once.
+            # flush + fsync = force the data onto the storage chip right now.
             entries = data if isinstance(data, list) else [data]
             path = os.path.join(BACKUP_DIR, f"journal-{datetime.now():%Y-%m}.jsonl")
             with open(path, "a", encoding="utf-8") as f:
@@ -114,7 +138,7 @@ class Handler(SimpleHTTPRequestHandler):
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=1)
-            os.replace(tmp, path)  # atomar: nie eine halbe Datei
+            os.replace(tmp, path)  # atomic rename: never a half-written snapshot
             for old in sorted(glob.glob(os.path.join(BACKUP_DIR, "snapshot-*.json")))[:-KEEP_SNAPSHOTS]:
                 os.remove(old)
             return self._json(200, {"ok": True, "file": os.path.basename(path)})
@@ -122,6 +146,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(404, {"ok": False, "error": "unbekannt"})
 
     def log_message(self, fmt, *args):
+        """Console log: only API calls, not every icon/file request."""
         if "/api/" in (args[0] if args else ""):
             super().log_message(fmt, *args)
 

@@ -10,49 +10,104 @@
 
   <!--
     ========================================================================
-    FILAMENT NFC – Spulenverwaltung für Android (Chrome + Web NFC)
+    FILAMENT NFC – spool management for Android (Chrome + Web NFC)
     ========================================================================
-    Jede Spule bekommt einen NFC-Tag (NTAG215/216). Auf dem Tag steht ALLES
-    Wichtige, damit die Spule auch ohne diese App und ohne das Handy
-    verständlich bleibt:
+    WHAT IT DOES
+      Every filament spool gets an NFC sticker (NTAG215/216). The tag holds
+      everything important, so the spool stays self-describing even without
+      this app or this phone.
 
-    Record 1 – MIME "application/json", OpenSpool-kompatibel (openspool.io):
-      Standardfelder, die auch fremde Apps/Drucker verstehen:
-        protocol, version, brand, type, subtype, color_hex,
-        min_temp, max_temp, bed_min_temp, bed_max_temp
-      Eigene Zusatzfelder (werden von anderen Lesern ignoriert):
-        id  : 4-stellige Spulen-ID
-        abr : 1 = abrasiv
-        ew  : Leergewicht der Spule in g
-        r   : Restgewicht Filament in g
-        cfg : Druckerprofile, Schlüssel = Drucker-Code (z.B. "PCO"),
-              Wert = kompakte, lesbare Zeile, z.B. "T215 B55 F0.98 PA0.04 MF15 R0.8/35"
-                T  Düsentemp °C          B  Betttemp °C (optional, sonst global)
-                F  Flow-Faktor           PA Pressure/Linear Advance
-                MF Max. Volumenstrom mm³/s
-                R  Retract Länge mm / Geschwindigkeit mm/s
-              Damit passen 5 Druckerprofile auf einen NTAG215.
+    HOW THIS FILE IS ORGANISED
+      One single file with three parts, all interpreted by the browser:
+        1. <style>  – CSS: the look (colours, spacing). Purely cosmetic.
+        2. <body>   – HTML: the static layout (tabs, cards, input fields).
+                      Think of it as the "form definition" of the screen.
+        3. <script> – JavaScript: all the logic.
 
-    Record 2 – Text (optional): Klartext-Zusammenfassung, die jede
-      NFC-App (z.B. "NFC Tools") direkt anzeigt.
+    JAVASCRIPT IN 60 SECONDS (for a Pascal/Fortran/assembler programmer)
+      - No main loop. The browser runs the script once at startup, then
+        calls our functions when something happens (button tap, keystroke,
+        NFC tag detected). Like interrupt service routines: the "onclick=..."
+        attributes in the HTML are the vector table.
+      - Variables are untyped. An "object" { a: 1, b: 'x' } is a Pascal
+        RECORD you don't have to declare; fields can be added at any time.
+        An "array" [1, 2, 3] is a dynamic array with .push(), .filter() etc.
+      - "const x = ..." cannot be reassigned, "let x = ..." can.
+      - Arrow functions:  x => x * 2   is a tiny anonymous FUNCTION(x).
+      - `text ${expr} text` (backticks) is a string with embedded expressions,
+        similar to Format() / WRITE with field descriptors.
+      - async / await: slow operations (NFC, network) don't block. "await"
+        suspends the function until the result is there, the UI stays alive.
+      - $('id') is our own shorthand for "find the HTML element with this id".
 
-    Lokal im Browser (localStorage) liegen nur: Inventar-Kopie aller Spulen
-    und die Stammdaten (Vorschlagslisten, Drucker). Backup über Export.
+    DATA FLOW (the central idea)
+                      renderForm()                    toTagJSON()
+        input fields  <==========  cur (one spool)  ===========>  NFC tag
+                      ==========>                   <===========
+                      collectForm()                   fromTagJSON()
+                                        |
+                                        | storeLocal()
+                                        V
+                      spools[] (inventory) => localStorage (phone storage)
+
+      (Note: inside an HTML comment two dashes in a row are not allowed,
+       hence the "=" arrows.)
+
+      `cur` is the spool currently shown in the form. `spools` is the
+      inventory: one copy of every spool. Both live in RAM and are written
+      to localStorage – a small key/value store the browser keeps per website,
+      comparable to a tiny persistent file per key.
+
+    WHAT IS STORED ON THE TAG (NDEF message = list of "records")
+      Record 1 – MIME type "application/json", OpenSpool compatible
+        (openspool.io). Standard fields other apps/printers understand:
+          protocol, version, brand, type, subtype, color_hex,
+          min_temp, max_temp, bed_min_temp, bed_max_temp
+        Our own extra fields (other readers simply ignore them):
+          id  : 4-character spool ID
+          abr : 1 = abrasive (field omitted when not abrasive)
+          ew  : empty spool weight in g
+          r   : remaining filament (net) in g
+          cfg : printer profiles; key = printer code (e.g. "PCO"),
+                value = one compact, human-readable line, e.g.
+                "T215 B55 F0.98 PA0.04 MF15 R0.8/35"
+                  T  nozzle °C             B  bed °C (optional, else spool value)
+                  F  flow factor           PA pressure / linear advance
+                  MF max volumetric speed mm³/s
+                  R  retraction length mm / speed mm/s
+                This text format instead of nested JSON objects saves ~40 %
+                and lets 5 printer profiles fit onto an NTAG215 (504 bytes).
+      Record 2 – plain text (optional): one-line summary that any NFC app
+        (e.g. "NFC Tools") shows directly.
+
+    WHAT IS STORED ON THE PHONE (localStorage keys, all prefixed "fnfc_")
+      fnfc_spools    inventory (array of spool records)
+      fnfc_settings  suggestion lists, colours, printers, empty weights
+      fnfc_opts      switches in Settings → Backup
+      fnfc_lang      chosen language ("auto", "de", "en")
+      fnfc_lastFile / fnfc_dirty   backup reminder bookkeeping
+      fnfc_pending / fnfc_serverSeen / fnfc_lastSnapshot   optional Termux backup
   ======================================================================== -->
 
   <style>
+    /* CSS = presentation only. Rules have the form  selector { property: value; }
+       ".name" targets elements with class="name", "#name" the element with id="name".
+       :root holds variables (--bg etc.), used below as var(--bg) – change a colour once here. */
     :root {
       --bg: #121212; --bg-card: #1e1e1e; --bg-input: #2a2a2a;
       --text: #e0e0e0; --muted: #888; --primary: #0d6efd; --success: #198754; --danger: #dc3545;
       --border: #333;
     }
     body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    /* Tab bar: stays at the top while scrolling (position: sticky). Only the
+       .tab-content with class "active" is visible; switchTab() moves that class. */
     .tabs { display: flex; background: var(--bg-card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
     .tab-btn { flex: 1; padding: 15px 5px; font-weight: bold; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; margin: 0; border-radius: 0; }
     .tab-btn.active { color: var(--primary); border-bottom: 3px solid var(--primary); }
     .tab-content { display: none; padding: 15px 15px 90px; max-width: 600px; margin: 0 auto; }
     .tab-content.active { display: block; }
 
+    /* Layout helpers: .card = framed box, .grid-N = N equal columns, .row = horizontal line */
     h4 { margin: 0 0 10px; }
     .card { background: var(--bg-card); padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid var(--border); }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -75,6 +130,8 @@
     .btn-secondary { background: var(--bg-input); color: white; border: 1px solid var(--border); }
     .btn-small { padding: 6px 10px; font-size: 12px; width: auto; margin-bottom: 0; }
 
+    /* Pop-up message at the bottom of the screen. Hidden by moving it below the
+       screen edge (translateY 150%); class "show" slides it in. ok/err = colour. */
     #toast { position: fixed; left: 12px; right: 12px; bottom: 16px; z-index: 20; max-width: 576px; margin: 0 auto;
       padding: 14px 16px; border-radius: 10px; font-size: 15px; font-weight: 600; color: white;
       background: #1f3b63; border-left: 6px solid var(--primary); box-shadow: 0 6px 24px rgba(0,0,0,.6);
@@ -88,6 +145,7 @@
     .printer-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 6px; flex-wrap: wrap; }
     .swatch { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 1px solid #666; vertical-align: middle; margin-right: 6px; flex: none; }
     .inventory-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    /* <details> = collapsible box (used in Help and for brand empty weights) */
     details.card summary { font-weight: bold; cursor: pointer; padding: 2px 0; }
     details.card[open] summary { margin-bottom: 8px; }
     details.card ol, details.card ul { padding-left: 20px; margin: 6px 0; line-height: 1.45; font-size: 14px; }
@@ -98,6 +156,8 @@
 </head>
 <body>
 
+  <!-- Tab bar. onclick="..." is the event handler: JavaScript run on a tap.
+       "this" passes the tapped button itself into switchTab(). -->
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('scanner', this)">Spule</button>
     <button class="tab-btn" onclick="switchTab('inventory', this)">Inventar</button>
@@ -105,7 +165,9 @@
     <button class="tab-btn" onclick="switchTab('help', this)" style="flex:0.6;">Hilfe</button>
   </div>
 
-  <!-- ===================== MODUL 1: SPULE ===================== -->
+  <!-- ===================== TAB 1: SPOOL ==========================
+       Read a tag, edit the spool, write it back. The ids (tagId, inVendor …)
+       are the "variable names" the script uses to read/write the fields. -->
   <div id="scanner" class="tab-content active">
 
     <div class="card">
@@ -185,7 +247,8 @@
     </div>
   </div>
 
-  <!-- ===================== MODUL 2: INVENTAR ===================== -->
+  <!-- ===================== TAB 2: INVENTORY ======================
+       The list itself is generated by renderInventory() into #inventoryList. -->
   <div id="inventory" class="tab-content">
     <div class="card">
       <div class="grid-2">
@@ -196,7 +259,9 @@
     <div id="inventoryList"></div>
   </div>
 
-  <!-- ===================== MODUL 3: VERWALTUNG ===================== -->
+  <!-- ===================== TAB 3: SETTINGS =======================
+       Lists (printers, colours, brands, materials) are generated by
+       renderSettings() into #settingsSections. Backup controls are static. -->
   <div id="settings" class="tab-content">
     <div class="card">
       <h4>Sprache / Language</h4>
@@ -233,28 +298,40 @@
     </div>
   </div>
 
-  <!-- ===================== MODUL 4: HILFE ===================== -->
+  <!-- ===================== TAB 4: HELP ===========================
+       Filled from the HELP texts (German/English) by renderHelp(). -->
   <div id="help" class="tab-content">
     <div id="helpContent"></div>
   </div>
 
+  <!-- Bottom pop-up message (see updateLog). Tap to close. -->
   <div id="toast" onclick="hideToast()"></div>
+  <!-- <datalist> = suggestion list for a text field (input list="dlVendors").
+       The browser shows matching entries while typing; free text is still allowed. -->
   <datalist id="dlVendors"></datalist>
   <datalist id="dlMaterials"></datalist>
   <datalist id="dlColors"></datalist>
 
 <script>
   // ===================================================================
-  // MEHRSPRACHIGKEIT
-  // Schlüssel ist immer der deutsche Text. Fehlt eine Übersetzung, wird
-  // Deutsch angezeigt. Neue Sprache: weiteres Objekt in I18N + Option in
-  // #selLang + Hilfetext in HELP ergänzen.
+  // TRANSLATION (i18n = "internationalisation": i + 18 letters + n)
+  // -------------------------------------------------------------------
+  // The German text itself is the lookup key. I18N.en is a dictionary
+  // (associative array) German -> English. If a key is missing, the German
+  // text is shown – nothing breaks.
+  // Two mechanisms use it:
+  //   1. t('…') in the script for messages built at run time,
+  //      with placeholders: t('Spool {id} read', { id: 'x7b9' }).
+  //   2. translateNode() for fixed texts in the HTML: it walks the screen
+  //      and replaces every text that matches a dictionary key.
+  // Adding a language: add I18N.xx = { … }, an <option> in #selLang and
+  // a HELP.xx text.
   // ===================================================================
   const I18N = { en: {} };
   I18N.en = {
-    // Navigation
+    // Tab bar
     "Spule": "Spool", "Inventar": "Inventory", "Verwaltung": "Settings", "Hilfe": "Help",
-    // Spule
+    // Spool tab
     "Tag-Typ": "Tag type", "NTAG213 (144 Bytes – zu klein)": "NTAG213 (144 bytes – too small)",
     "Spulen-ID": "Spool ID", "NFC-Tag lesen": "Read NFC tag", "Neue Spule": "New spool", "Demo laden": "Load demo",
     "Bereit.": "Ready.", "Hersteller": "Brand", "Brands": "Brands",
@@ -271,7 +348,7 @@
     "z.B. Polymaker": "e.g. Polymaker", "z.B. PLA CF": "e.g. PLA CF", "z.B. Schwarz": "e.g. Black", "wiegen": "weigh",
     "Noch keine Profile auf dieser Spule.": "No profiles on this spool yet.", "unbekannt": "unknown",
     "Tag-Belegung: {size} / {cap} Bytes": "Tag usage: {size} / {cap} bytes", "zu groß": "too large",
-    // Meldungen
+    // Status messages (shown in #log and the bottom pop-up)
     "Neue Spule angelegt. Werte ausfüllen, dann speichern.": "New spool created. Fill in the values, then save.",
     "Demo-Spule geladen (ohne NFC).": "Demo spool loaded (no NFC).",
     "Erst eine Spule lesen oder neu anlegen.": "Read or create a spool first.",
@@ -295,13 +372,13 @@
     "Spule {id} gelesen: {name}.": "Spool {id} read: {name}.", "noch nicht im Inventar": "not in inventory yet",
     "Spule {id} aus dem Inventar geladen.": "Spool {id} loaded from inventory.",
     "Profil \"{name}\" exportiert (Ordner Downloads).": "Profile \"{name}\" exported (Downloads folder).",
-    // Inventar
+    // Inventory tab
     "Suche": "Search", "Alle": "All", "Hersteller, Farbe, ID…": "Brand, colour, ID…",
     "Keine Spulen gefunden.": "No spools found.",
     "{n} Spule(n), zusammen {g} g. Antippen zum Bearbeiten.": "{n} spool(s), {g} g in total. Tap to edit.",
     "Rest": "Remaining", "keine Profile": "no profiles",
     "Spule {id} aus dem Inventar löschen? (Der Tag bleibt unverändert.)": "Delete spool {id} from the inventory? (The tag stays unchanged.)",
-    // Verwaltung
+    // Settings tab
     "Vorschlagslisten für die Eingabefelder. Auf dem Tag steht immer der Klartext – diese Listen sind nur eine Eingabehilfe.": "Suggestion lists for the input fields. The tag always stores plain text – these lists are just an input aid.",
     "Drucker": "Printers", "Farben": "Colours", "Materialien": "Materials",
     "Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.": "The code is stored on the tag (keep it short). The firmware decides the pressure advance command in the PrusaSlicer export.",
@@ -316,7 +393,7 @@
     "Bitte einen Namen für die Farbe eingeben.": "Please enter a name for the colour.",
     "Der Farbwert {hex} heißt schon \"{same}\". Trotzdem zusätzlich als \"{name}\" anlegen?": "Colour value {hex} is already called \"{same}\". Add it as \"{name}\" as well?",
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
-    // Datensicherung
+    // Backup
     "Datensicherung": "Backup",
     "Spulengröße": "Spool size",
     "Kein Leergewicht für {b} {s} bekannt.": "No empty weight known for {b} {s}.",
@@ -346,6 +423,11 @@
     "{n} Änderung(en) werden nachgeholt, sobald er läuft.": "{n} change(s) will be sent once it is running.",
     "Keine lokalen Daten, aber eine Sicherung mit {n} Spule(n) gefunden. Wiederherstellen?": "No local data, but a backup with {n} spool(s) was found. Restore?"
   };
+
+  // Active language, decided once at startup. The construct (() => { … })()
+  // defines an anonymous function and calls it immediately – a way to compute
+  // a constant with several statements. Order: saved choice -> phone language
+  // -> English if we have no dictionary for that language.
   const LANG = (() => {
     let l = 'auto';
     try { l = localStorage.getItem('fnfc_lang') || 'auto'; } catch (e) {}
@@ -354,14 +436,23 @@
   })();
   document.documentElement.lang = LANG;
 
+  // t = "translate". Look up the German key in the active dictionary, then
+  // replace {name} placeholders with params.name. The regular expression
+  // /\{(\w+)\}/g means: "{", one or more word characters (captured), "}",
+  // g = all occurrences.
   function t(key, params) {
     let s = (LANG !== 'de' && I18N[LANG] && I18N[LANG][key]) || key;
     if (params) s = s.replace(/\{(\w+)\}/g, (m, k) => (params[k] ?? m));
     return s;
   }
 
-  // Übersetzt feste Texte im HTML (Textknoten, Platzhalter, Titel) – auch später
-  // per innerHTML eingefügte Elemente, über einen MutationObserver.
+  // Translate fixed texts on screen. The page is a tree of nodes (the DOM =
+  // Document Object Model): elements like <div>, and text nodes inside them.
+  // A TreeWalker visits every text node below `root`, like a recursive tree
+  // traversal. Placeholder/title attributes are handled separately.
+  // At startup this runs once for the whole page; afterwards a
+  // MutationObserver (see end of script) calls it for every element that
+  // the script inserts later via innerHTML.
   function translateNode(root) {
     if (LANG === 'de') return;
     const dict = I18N[LANG] || {};
@@ -382,11 +473,19 @@
       }
     }
   }
+  // Save the choice and reload the page – simplest way to rebuild everything in the new language.
   function setLang(l) { try { localStorage.setItem('fnfc_lang', l); } catch (e) {} location.reload(); }
 
   // ===================================================================
-  // Stammdaten (nur Eingabehilfe) und Drucker
-  // fw = Firmware-Familie, bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export
+  // DEFAULT MASTER DATA
+  // -------------------------------------------------------------------
+  // Used only on first start (or for missing parts). After that the user's
+  // own copy in localStorage ("settings") is authoritative.
+  // vendors/materials: suggestion lists for the input fields.
+  // colors:  name -> hex colour value "#RRGGBB".
+  // printers: code -> { name, fw }. The code is what ends up on the tag;
+  //           fw = firmware family, selects the pressure advance G-code in
+  //           the PrusaSlicer export (see exportProfile).
   // ===================================================================
   const DEFAULT_SETTINGS = {
     vendors: ["Polymaker", "Prusament", "Sunlu", "eSun", "Bambu Lab", "Elegoo"],
@@ -400,40 +499,60 @@
     }
   };
   const FW_LABELS = { prusa: "Prusa (M572)", klipper: "Klipper (SET_PRESSURE_ADVANCE)", marlin: "Marlin (M900)" };
+  // Starting values for a new printer profile on a spool (field names as on the tag).
   const DEFAULT_PROFILE = { t: 215, f: 1.0, pa: 0.0, mf: 12, rd: 0.8, rs: 35 };
+  // Table driving the printer card input fields: [field, label, step of the number input].
+  // One table instead of seven hand-written input fields – add a row here to add a field.
   const PROFILE_FIELDS = [
     ['t', 'Düse °C', '1'], ['b', 'Bett °C', '1'], ['f', 'Flow', '0.01'],
     ['pa', 'PA', '0.001'], ['mf', 'Max mm³/s', '0.5'], ['rd', 'Retr. mm', '0.1'], ['rs', 'Retr. mm/s', '1']
   ];
 
-  // ---------------- Hilfsfunktionen ----------------
+  // ---------------- Small helper functions ----------------
+  // Read a value from localStorage. Storage only holds strings, so objects
+  // are saved as JSON text and parsed back here. try/catch = if anything
+  // goes wrong (missing key, corrupt text), return the fallback instead of
+  // crashing. "??" means: use the right side if the left is null/undefined.
   function loadJSON(key, fallback) {
     try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; } catch (e) { return fallback; }
   }
+  // Deep copy of an object (record) via JSON round trip. Needed because assigning
+  // an object only copies a reference (pointer), not the data.
   const clone = o => JSON.parse(JSON.stringify(o));
+  // Shorthand: $('numBed') returns the HTML element with id="numBed".
   const $ = id => document.getElementById(id);
+  // Escape text before inserting it into HTML. Otherwise a name like
+  // "<b>" or O'Brien would be interpreted as markup / break our onclick strings.
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   }
+  // Parse a number from an input field; accepts a German decimal comma; empty -> fallback.
   function num(v, fallback = 0) {
     const n = parseFloat(String(v ?? "").replace(',', '.'));
     return isNaN(n) ? fallback : n;
   }
+  // Length of a string in BYTES (UTF-8), not characters: 'ä' or '°' take 2 bytes on the tag.
   const utf8Len = s => new TextEncoder().encode(s).length;
 
+
+  // ---------------- Load persistent state at startup ----------------
+  // English installs start with English colour names.
   if (LANG !== 'de') DEFAULT_SETTINGS.colors = { "Black": "#1A1A1A", "White": "#F5F5F5", "Grey": "#8A8A8A", "Red": "#C62828", "Blue": "#1565C0", "Green": "#2E7D32", "Yellow": "#F9D71C", "Orange": "#EF6C00", "Natural": "#E8E0C8" };
+  // settings = master data. Missing sections (e.g. after an app update) are filled from the defaults.
   let settings = loadJSON('fnfc_settings', null) || clone(DEFAULT_SETTINGS);
   for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
   if (!settings.emptyWeights || typeof settings.emptyWeights !== 'object') settings.emptyWeights = {};
-  // Vordefinierte Farben ohne gültigen Farbwert mit dem Standardwert ergänzen
+  // Repair: predefined colours without a valid hex value get the default value back.
   for (const n in settings.colors) {
     if (!/^#[0-9a-f]{6}$/i.test(String(settings.colors[n] || '')) && DEFAULT_SETTINGS.colors[n]) settings.colors[n] = DEFAULT_SETTINGS.colors[n];
   }
+  // spools = the inventory: an array of spool records (same structure as `cur`).
   let spools = loadJSON('fnfc_spools', []);
   if (!Array.isArray(spools)) spools = [];
 
-  // Nur beim Einspielen eines Backups: doppelte Spulen-IDs zusammenführen
-  // (bei Doppelten gewinnt der zuletzt geänderte Eintrag).
+  // Used only when importing a backup file: merge entries with the same spool ID.
+  // A Map is a dictionary keyed by ID; for duplicates the entry with the later
+  // "updated" timestamp wins (ISO date strings compare correctly as text).
   function dedupeSpools(list) {
     const byId = new Map();
     for (const s of list) {
@@ -443,24 +562,38 @@
     }
     return [...byId.values()];
   }
+  // Write master data / inventory back to phone storage. Called after every change.
+  // journal() additionally reports the change to the optional Termux backup server.
   const saveSettings = () => { localStorage.setItem('fnfc_settings', JSON.stringify(settings)); journal({ op: 'settings', data: settings }); };
   const saveSpools = () => localStorage.setItem('fnfc_spools', JSON.stringify(spools));
 
-  // ---------------- Datenmodell einer Spule ----------------
-  // Intern arbeiten wir mit "spool"; erst beim Schreiben wird daraus das Tag-JSON.
+  // ---------------- Data model of one spool ----------------
+  // Inside the app a spool is this record (readable field names). Only when
+  // writing to a tag is it converted to the compact tag format (toTagJSON),
+  // and back when reading (fromTagJSON). Fields:
+  //   id        4-char ID          brand, material, cn (colour name), hex (#RRGGBB)
+  //   abr       1 = abrasive       tmin/tmax nozzle range °C, bed °C
+  //   ew        empty spool g      r remaining net g
+  //   nw        nominal size g (250/500/…) – phone only, NOT on the tag
+  //   cfg       { printerCode: { t, b, f, pa, mf, rd, rs } }
+  //   updated   ISO timestamp of last save (inventory only)
   function emptySpool() {
     return { id: "", brand: "", material: "", cn: "", hex: "#000000", abr: 0,
              tmin: 0, tmax: 0, bed: 0, ew: 0, r: 0, nw: 0, cfg: {} };
   }
+  // cur = the spool currently shown in the form (the "work record").
   let cur = emptySpool();
 
-  // Material "PLA CF" -> OpenSpool type "PLA", subtype "CF"
+  // OpenSpool separates base material and variant. We keep one text field:
+  // first word = type (upper case), rest = subtype.  "PLA CF" -> PLA + CF"
   function splitMaterial(m) {
     const parts = String(m).trim().split(/\s+/);
     return { type: (parts.shift() || "").toUpperCase(), subtype: parts.join(" ") };
   }
 
-  // Spule -> Tag-JSON (OpenSpool + Zusatzfelder)
+  // Spool record -> object in tag format (OpenSpool fields + our extras).
+  // Optional fields are only added when set – every byte counts on the tag.
+  // Temperatures are written as strings ("210") as in the OpenSpool examples.
   function toTagJSON(s) {
     const { type, subtype } = splitMaterial(s.material);
     const o = { protocol: "openspool", version: "1.0", brand: s.brand || "Generic", type: type || "PLA" };
@@ -477,7 +610,8 @@
     return o;
   }
 
-  // Profil-Objekt -> "T215 B55 F0.98 PA0.04 MF15 R0.8/35"
+  // Printer profile record -> compact text line "T215 B55 F0.98 PA0.04 MF15 R0.8/35".
+  // B (bed) only if the profile overrides the spool's bed temperature.
   function profileToString(p) {
     const parts = [`T${p.t}`];
     if (p.b !== undefined && p.b !== null && p.b !== '') parts.push(`B${p.b}`);
@@ -485,7 +619,11 @@
     return parts.join(' ');
   }
 
-  // Lesbare Zeile -> Profil-Objekt (alte Objekt-Schreibweise wird auch akzeptiert)
+  // Text line -> printer profile record (inverse of profileToString).
+  // Split at spaces into tokens; each token = letter code + value. The regex
+  // ^(PA|MF|T|B|F|R)(.+)$ checks the two-letter codes first so "PA0.04" is
+  // not mistaken for "P…". Unknown tokens are ignored, missing values come
+  // from DEFAULT_PROFILE. Old tags with a nested object are accepted too.
   function profileFromString(v) {
     if (v && typeof v === 'object') return clone(v);
     const p = {};
@@ -499,7 +637,9 @@
     return Object.assign(clone(DEFAULT_PROFILE), p);
   }
 
-  // Tag-JSON (auch fremde OpenSpool-Tags) -> Spule
+  // Tag object -> spool record. Works for our own tags and for foreign
+  // OpenSpool tags (which simply lack id/cfg/ew/r). Values are passed through
+  // num() because other writers may store numbers as strings or vice versa.
   function fromTagJSON(o) {
     const s = emptySpool();
     s.id = o.id || "";
@@ -507,7 +647,7 @@
     s.material = [o.type, o.subtype].filter(Boolean).join(" ");
     let hex = String(o.color_hex || "000000").replace('#', '');
     s.hex = /^[0-9a-f]{6}/i.test(hex) ? '#' + hex.slice(0, 6).toUpperCase() : "#000000";
-    // Farbname steht nicht auf dem Tag – über den Farbwert aus der Farbliste ermitteln
+    // The colour name is not stored on the tag (saves bytes); look it up by hex value.
     s.cn = o.cn || colorNameForHex(s.hex);
     s.abr = o.abr ? 1 : 0;
     s.tmin = num(o.min_temp); s.tmax = num(o.max_temp);
@@ -518,12 +658,13 @@
     return s;
   }
 
+  // Reverse lookup in the colour list: hex value -> name ("" if unknown).
   function colorNameForHex(hex) {
     const h = String(hex).toUpperCase();
     return Object.keys(settings.colors).find(n => String(settings.colors[n]).toUpperCase() === h) || "";
   }
 
-  // Klartext für Record 2 – das sieht jeder mit einer beliebigen NFC-App
+  // One-line plain text for the optional second NDEF record – readable with any NFC app.
   function summaryText(s) {
     const parts = [`${s.brand || '?'} ${s.material || '?'}${s.cn ? ' ' + s.cn : ''}`];
     if (s.tmin || s.tmax) parts.push(`${s.tmin || '?'}-${s.tmax || '?'}°C`);
@@ -532,18 +673,24 @@
     return parts.join(' | ');
   }
 
-  // Exakter NDEF-Platzbedarf (Record-Header + TLV + Terminator)
+  // Exact number of bytes the NDEF message will occupy on the tag.
+  // Each record: 1 header byte + 1 type-length byte + payload length
+  // (1 byte if < 256 = "short record", else 4) + type + payload.
+  // The whole message is wrapped in a TLV block (Tag 0x03, Length 1 or 3
+  // bytes, Value) plus a terminator byte 0xFE. Same idea as a length-prefixed
+  // record in a binary file.
   function ndefSize(jsonStr, text) {
     const rec = (typeLen, payloadLen) => 2 + (payloadLen < 256 ? 1 : 4) + typeLen + payloadLen;
-    let msg = rec(16, utf8Len(jsonStr));              // "application/json" = 16 Zeichen
-    if (text) msg += rec(1, 3 + utf8Len(text));        // Typ "T", Status-Byte + "en"
+    let msg = rec(16, utf8Len(jsonStr));              // type "application/json" = 16 bytes
+    if (text) msg += rec(1, 3 + utf8Len(text));        // type "T"; payload = status byte + "en" + text
     return msg + (msg < 255 ? 2 : 4) + 1;
   }
 
-  // ---------------- UI ----------------
-  // Meldung oben im Spulen-Tab UND als Einblendung unten am Bildschirm,
-  // damit man das Ergebnis sieht, ohne nach oben scrollen zu müssen.
-  // sticky = bleibt stehen (z.B. "Handy an den Tag halten…"), bis die nächste Meldung kommt.
+  // ---------------- User interface ----------------
+  // Status output. Shown in the grey box at the top of the spool tab AND as
+  // a pop-up at the bottom, so the result is visible without scrolling.
+  // sticky = stays until the next message (e.g. "hold phone to tag…");
+  // otherwise a timer (setTimeout = "call this function in N ms") hides it.
   let toastTimer = null;
   function updateLog(msg, isError = false, sticky = false) {
     $('log').innerText = msg;
@@ -553,11 +700,14 @@
     el.className = 'show ' + (isError ? 'err' : msg.startsWith('✔') ? 'ok' : '');
     clearTimeout(toastTimer);
     if (!sticky) toastTimer = setTimeout(hideToast, isError ? 7000 : 4000);
-    // Kurzes Vibrieren als Rückmeldung (wenn das Handy es unterstützt)
+    // Haptic feedback: vibrate pattern in ms (on, off, on). Silently ignored if unsupported.
     try { if (isError) navigator.vibrate([90, 60, 90]); else if (msg.startsWith('✔')) navigator.vibrate(80); } catch (e) {}
   }
   function hideToast() { $('toast').classList.remove('show'); }
 
+  // Show one tab, hide the others: remove class "active" everywhere, set it on
+  // the chosen tab + button (the CSS shows only .tab-content.active).
+  // Some tabs are redrawn on entry so they show current data.
   function switchTab(tabId, btn) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
@@ -568,6 +718,7 @@
     window.scrollTo(0, 0);
   }
 
+  // Draw everything once. Called at startup and after importing a backup.
   function initApp() {
     refreshLists();
     renderSettings();
@@ -575,6 +726,7 @@
     renderInventory();
   }
 
+  // Fill the <datalist> suggestion lists from the master data.
   function refreshLists() {
     $('dlVendors').innerHTML = settings.vendors.map(v => `<option value="${esc(v)}">`).join('');
     $('dlMaterials').innerHTML = settings.materials.map(v => `<option value="${esc(v)}">`).join('');
@@ -582,13 +734,16 @@
     updateAddPrinterDropdown();
   }
 
-  // Bekannter Farbname gewählt -> Farbwert automatisch setzen
+  // A known colour name was typed/chosen -> set the colour picker to its hex value.
   function colorNameChanged() {
     const hex = settings.colors[$('inColorName').value.trim()];
     if (hex) $('inColorHex').value = hex;
     updateSizeInfo();
   }
 
+  // New random 4-character spool ID (a–z, 0–9 = 36^4 ≈ 1.7 million combinations).
+  // do…while = Pascal's REPEAT…UNTIL: draw again while the ID already exists
+  // in the inventory. This is the only place where uniqueness is enforced.
   function generateID() {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     let id;
@@ -597,6 +752,8 @@
     return id;
   }
 
+  // "New spool" button: empty record with fresh ID and sensible defaults.
+  // The last used spool size is preselected (you mostly use 0.25/0.5 kg).
   function createNewSpool() {
     cur = emptySpool();
     cur.id = generateID();
@@ -604,11 +761,12 @@
     cur.r = cur.nw; cur.tmin = 200; cur.tmax = 230; cur.bed = 60;
     $('numScaleWt').value = "";
     renderForm();
-    $('numEmptyWt').dataset.auto = '1';   // Leergewicht darf per Vorschlag gefüllt werden
+    $('numEmptyWt').dataset.auto = '1';   // empty weight may be filled by a suggestion
     applyEWSuggestion();
     updateLog(t("Neue Spule angelegt. Werte ausfüllen, dann speichern."));
   }
 
+  // "Load demo": a complete example spool, for testing without NFC (e.g. on the Mac).
   function loadDemoTag() {
     cur = fromTagJSON({
       protocol: "openspool", version: "1.0", brand: "Polymaker", type: "PLA", subtype: "CF",
@@ -622,9 +780,12 @@
     updateLog(t("Demo-Spule geladen (ohne NFC)."));
   }
 
-  // ---------------- Leergewicht-Vorschlag ----------------
-  // 1. fest hinterlegter Wert (Verwaltung → Hersteller), sonst
-  // 2. gelernt: häufigster Wert deiner Spulen mit gleichem Hersteller + Größe
+  // ---------------- Empty spool weight suggestion ----------------
+  // Priority:
+  //   1. fixed value from Settings → Brands (settings.emptyWeights[brand][size])
+  //   2. learned: the most frequent ew of your other spools with the same
+  //      brand and size (a frequency table, then pick the maximum)
+  // Returns null if nothing is known, else { g, src, n }.
   function suggestEW(brand, size) {
     if (!brand || !size) return null;
     const manual = settings.emptyWeights[brand] && settings.emptyWeights[brand][size];
@@ -637,10 +798,14 @@
     return { g, src: 'learned', n: vals.length };
   }
 
+  // 500 -> "0,5 kg" (German) / "0.5 kg" (English).
   function sizeLabel(size) { return (size / 1000).toLocaleString(LANG === 'de' ? 'de-DE' : 'en-US') + ' kg'; }
 
-  // Wird nur bei Änderung von Hersteller oder Spulengröße aufgerufen – nie beim Tippen
-  // im Leergewicht-Feld, damit man den Wert frei löschen und neu eingeben kann.
+  // Put the suggestion into the empty-weight field. Called only when brand or
+  // spool size changes – never while typing in the weight field itself, so
+  // the value can be deleted freely. The field's data-auto flag ("1" = value
+  // came from a suggestion, "0" = typed by the user) prevents overwriting
+  // user input.
   function applyEWSuggestion() {
     const brand = $('inVendor').value.trim(), size = parseInt($('selSize').value);
     const sug = suggestEW(brand, size), field = $('numEmptyWt'), hint = $('ewHint');
@@ -654,6 +819,7 @@
       : t('Leergewicht {b} {s}: {g} g (gelernt aus {n} Spule(n))', { b: brand, s: sizeLabel(size), g: sug.g, n: sug.n });
   }
 
+  // cur -> input fields ("display the record"). The inverse is collectForm().
   function renderForm() {
     $('tagId').value = cur.id;
     $('inVendor').value = cur.brand;
@@ -665,7 +831,7 @@
     $('numTmax').value = cur.tmax || "";
     $('numBed').value = cur.bed || "";
     $('numEmptyWt').value = cur.ew || "";
-    $('numEmptyWt').dataset.auto = '0';   // geladene Werte nie automatisch überschreiben
+    $('numEmptyWt').dataset.auto = '0';   // never auto-overwrite a loaded value
     $('selSize').value = String(cur.nw || 1000);
     $('numNetWt').value = cur.r || "";
     updateAddPrinterDropdown();
@@ -673,7 +839,7 @@
     updateSizeInfo();
   }
 
-  // Formular -> cur
+  // Input fields -> cur ("read the record back from the screen").
   function collectForm() {
     cur.brand = $('inVendor').value.trim();
     cur.material = $('inMaterial').value.trim();
@@ -688,11 +854,13 @@
     cur.r = Math.round(num($('numNetWt').value));
   }
 
+  // Net = scale reading - empty spool weight, never below 0.
   function calcNetWeight() {
     const scale = parseFloat($('numScaleWt').value);
     if (!isNaN(scale)) $('numNetWt').value = Math.max(0, Math.round(scale - num($('numEmptyWt').value)));
   }
 
+  // Live display "Tag usage: n / 504 bytes". Runs on every keystroke in the spool tab.
   function updateSizeInfo() {
     if (!cur.id) { $('sizeInfo').textContent = ""; return; }
     collectForm();
@@ -704,7 +872,9 @@
     $('sizeInfo').style.color = size > cap ? 'var(--danger)' : 'var(--muted)';
   }
 
-  // ---------------- Druckerprofile ----------------
+  // ---------------- Printer profiles on the current spool ----------------
+  // cur.cfg is a dictionary printerCode -> profile record.
+  // "Add profile" dropdown: only printers that have no profile on this spool yet.
   function updateAddPrinterDropdown() {
     $('selAddPrinter').innerHTML = Object.entries(settings.printers)
       .filter(([code]) => !cur.cfg[code])
@@ -731,6 +901,8 @@
     updateSizeInfo();
   }
 
+  // Called by every input in a printer card (oninput). An empty bed field
+  // deletes B, so the spool's bed temperature applies again.
   function setProfileValue(code, field, value) {
     if (!cur.cfg[code]) return;
     if (field === 'b' && String(value).trim() === '') delete cur.cfg[code].b;
@@ -738,6 +910,9 @@
     updateSizeInfo();
   }
 
+  // Build the printer cards as an HTML string and insert it in one go via
+  // innerHTML. .map() turns each element of an array into a string,
+  // .join('') concatenates them – a loop that produces text.
   function renderPrinterCards() {
     const codes = Object.keys(cur.cfg);
     if (!codes.length) { $('printerProfilesContainer').innerHTML = `<p class='hint'>${t('Noch keine Profile auf dieser Spule.')}</p>`; return; }
@@ -764,7 +939,8 @@
     }).join('');
   }
 
-  // ---------------- Speichern ----------------
+  // ---------------- Saving ----------------
+  // Copy cur into the inventory: replace the entry with the same ID, or append.
   function storeLocal() {
     collectForm();
     if (cur.nw) localStorage.setItem('fnfc_lastSize', String(cur.nw));
@@ -778,7 +954,7 @@
     dailyFileBackup();
   }
 
-  // Neue Hersteller/Materialien/Farben automatisch in die Vorschlagslisten übernehmen
+  // New brands/materials/colours used on a spool are added to the suggestion lists.
   function learnSuggestions() {
     let changed = false;
     if (cur.brand && !settings.vendors.includes(cur.brand)) { settings.vendors.push(cur.brand); changed = true; }
@@ -787,6 +963,7 @@
     if (changed) { saveSettings(); refreshLists(); renderSettings(); }
   }
 
+  // Minimum requirements before saving: a spool is loaded, brand and material are set.
   function validate() {
     if (!cur.id) { updateLog(t("Keine Spule geladen. Tag lesen oder 'Neue Spule'."), true); return false; }
     collectForm();
@@ -794,12 +971,18 @@
     return true;
   }
 
+  // "Save locally only": inventory update, tag untouched.
   function saveLocalOnly() {
     if (!validate()) return;
     storeLocal();
     updateLog(t('Spule {id} lokal gespeichert (Tag nicht verändert).', { id: cur.id }));
   }
 
+  // "Write to NFC tag". Order of events:
+  //   1. build the tag object, check it fits (size check before touching the tag)
+  //   2. hand the records to Web NFC; the browser waits until a tag is near
+  //   3. only on success update the inventory, so it always mirrors the tag.
+  // "await" suspends here until the write finished or failed (-> catch).
   async function saveToTag() {
     if (!validate()) return;
     const json = JSON.stringify(toTagJSON(cur));
@@ -817,7 +1000,7 @@
     updateLog(t('Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }), false, true);
     try {
       await (nfcReader || new NDEFReader()).write({ records });
-      // Erst nach erfolgreichem Schreiben: Inventar-Eintrag an den Tag-Inhalt angleichen
+      // Write succeeded -> bring the inventory entry in line with the tag.
       storeLocal();
       updateLog('✔ ' + t('Auf Tag geschrieben ({size}/{cap} Bytes).', { size, cap }));
     } catch (err) {
@@ -825,9 +1008,15 @@
     }
   }
 
-  // ---------------- NFC lesen ----------------
+  // ---------------- Reading NFC ----------------
+  // Web NFC: NDEFReader is the browser's NFC interface (Chrome on Android
+  // only, and only on https:// or localhost). One reader object for the whole
+  // session; scan() starts listening, afterwards the browser calls
+  // onreading() for every tag that comes near – an event handler, not a poll.
   let nfcReader = null;
 
+  // "Read NFC tag" button. Starts the scanner once; it then stays active,
+  // so several spools can be read in a row.
   async function readNFC() {
     if (!("NDEFReader" in window)) { updateLog(t("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig."), true); return; }
     if (nfcReader) { updateLog(t("Scanner aktiv – Handy an die Spule halten…")); return; }
@@ -843,6 +1032,8 @@
     }
   }
 
+  // Called with the records of a detected tag. Looks for the first record that
+  // contains JSON in our/OpenSpool format, converts it into `cur` and shows it.
   function handleTag(records) {
     let data = null;
     for (const rec of records) {
@@ -852,12 +1043,12 @@
         const txt = new TextDecoder(rec.encoding || "utf-8").decode(rec.data);
         const o = JSON.parse(txt);
         if (o && (o.protocol === "openspool" || o.cfg)) { data = o; break; }
-      } catch (e) { /* kein JSON – nächsten Record probieren */ }
+      } catch (e) { /* not JSON – try the next record */ }
     }
     if (!data) { updateLog(t(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben."), true); return; }
 
     cur = fromTagJSON(data);
-    // Bekannte Spule: Farbname aus dem Inventar übernehmen, falls der Farbwert nicht in der Farbliste steht
+    // Known spool: take phone-only data (spool size, colour name) from the inventory.
     const inv = spools.find(s => s.id === cur.id);
     let note = "";
     if (inv && inv.nw) { cur.nw = inv.nw; $('selSize').value = String(inv.nw); }
@@ -867,8 +1058,9 @@
     renderForm();
     switchTab('scanner', document.querySelector('.tab-btn'));
     let known = spools.some(s => s.id === cur.id);
-    // Unbekannte Spule direkt ins Inventar – so lässt sich der Bestand nach Datenverlust
-    // einfach durch Abscannen aller Spulen wiederherstellen (alle wichtigen Daten stehen auf dem Tag).
+    // Unknown spool -> add it to the inventory right away (switchable). After a
+    // data loss you can rebuild the inventory just by scanning all spools,
+    // because everything important is on the tags.
     if (!known && opts.autoAdd && !note) {
       const entry = clone(cur); entry.updated = new Date().toISOString();
       spools.push(entry); saveSpools(); journal({ op: 'spool', data: entry });
@@ -877,7 +1069,10 @@
     updateLog('✔ ' + t("Spule {id} gelesen: {name}.", { id: cur.id, name: cur.brand + " " + cur.material }) + (known ? "" : " (" + t("noch nicht im Inventar") + ")") + note);
   }
 
-  // ---------------- Inventar ----------------
+  // ---------------- Inventory tab ----------------
+  // Draw the inventory list. Pipeline: map each spool to {s, i} (keep the
+  // original index i for the buttons), filter by material and search text,
+  // sort by brand+material, then build HTML. reduce() sums up the weights.
   function renderInventory() {
     const sel = $('invFilter');
     const old = sel.value || 'all';
@@ -908,6 +1103,7 @@
         </div>`).join('');
   }
 
+  // Tap on an inventory entry -> copy it into cur and switch to the spool tab.
   function loadFromInventory(i) {
     if (!spools[i]) return;
     cur = Object.assign(emptySpool(), clone(spools[i]));
@@ -918,6 +1114,7 @@
     updateLog(t('Spule {id} aus dem Inventar geladen.', { id: cur.id }));
   }
 
+  // Remove from the inventory only; the tag itself is not touched.
   function deleteSpool(i) {
     if (!confirm(t('Spule {id} aus dem Inventar löschen? (Der Tag bleibt unverändert.)', { id: spools[i].id }))) return;
     const id = spools[i].id;
@@ -928,7 +1125,9 @@
     renderInventory();
   }
 
-  // ---------------- Slicer-Export ----------------
+  // ---------------- Slicer export ----------------
+  // Generates a filament profile file for one printer profile of the spool.
+  // Collect everything the export needs: profile values, printer, base type, effective bed temp.
   function profileFor(code) {
     collectForm();
     const p = cur.cfg[code];
@@ -943,8 +1142,10 @@
     const { p, printer, type, bed, name } = profileFor(code);
     const safe = name.replace(/[^\w\-. @äöüÄÖÜß]+/g, '_');
     if (kind === 'prusa') {
-      // PrusaSlicer Config-Bundle: Datei > Importieren > Config-Bundle importieren
-      // Legt ein eigenes Filament-Preset an; nicht enthaltene Werte bekommen PrusaSlicer-Standardwerte.
+      // PrusaSlicer config bundle (INI format): File > Import > Import Config Bundle.
+      // The [filament:Name] section creates a separate filament preset; keys we
+      // don't write get PrusaSlicer's defaults. PrusaSlicer has no pressure
+      // advance setting, so the firmware command goes into start_filament_gcode.
       const paCmd = { prusa: `M572 S${p.pa}`, marlin: `M900 K${p.pa}`, klipper: `SET_PRESSURE_ADVANCE ADVANCE=${p.pa}` }[printer.fw] || '';
       const lines = [
         `# Erzeugt von Filament NFC – Spule ${cur.id}`,
@@ -966,7 +1167,8 @@
       ];
       download(`${safe}.ini`, lines.join('\n'), 'text/plain');
     } else {
-      // OrcaSlicer: Datei > Importieren > Konfigurationen importieren
+      // OrcaSlicer filament preset (JSON): File > Import > Import Configs.
+      // Orca stores most values as arrays of strings (one entry per extruder).
       const o = {
         type: "filament", name, from: "User", inherits: "", version: "2.3.0.0",
         filament_settings_id: [name],
@@ -993,6 +1195,9 @@
     updateLog(t('Profil "{name}" exportiert (Ordner Downloads).', { name }));
   }
 
+  // Offer a file for download: wrap the text in a Blob (in-memory file), make
+  // a temporary URL for it, "click" an invisible link, then release the URL.
+  // On Android the file lands in the Downloads folder.
   function download(filename, content, mime) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([content], { type: mime }));
@@ -1001,7 +1206,8 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
-  // ---------------- Verwaltung ----------------
+  // ---------------- Settings tab ----------------
+  // Builds the printer, colour, brand and material cards as one HTML string.
   function renderSettings() {
     const listCard = (key, title, items, render) => `
       <div class="card">
@@ -1029,7 +1235,7 @@
         <p class="hint" style="margin-bottom:0;">${t('Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.')}</p>
       </div>`;
 
-    // Farben: Farbwert direkt antippen zum Ändern, unten neue Farbe anlegen
+    // Colours: each row has its own colour picker (onchange -> setColorHex).
     html += `
       <div class="card">
         <h4>${t('Farben')}</h4>
@@ -1062,7 +1268,8 @@
           <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('${key}')">+</button>
         </div>
       </div>`;
-    // Hersteller mit Leergewichten je Spulengröße (aufklappbar)
+    // Brands: collapsible rows with one empty-weight field per spool size.
+    // Learned values appear as grey placeholder "≈ 110" (not stored, just shown).
     const SIZES = [250, 500, 750, 1000, 2000, 3000];
     html += `
       <div class="card">
@@ -1097,6 +1304,7 @@
     $('settingsSections').innerHTML = html;
   }
 
+  // Printer codes: upper case letters/digits only – they end up on the tag and in onclick strings.
   function addPrinter() {
     const code = $('addPrCode').value.trim().toUpperCase();
     const name = $('addPrName').value.trim();
@@ -1107,6 +1315,7 @@
     saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
   }
 
+  // Profiles already written to spools stay there; only the printer entry is removed.
   function deletePrinter(code) {
     const used = spools.filter(s => s.cfg && s.cfg[code]).length;
     if (!confirm(used ? t('{code} wird von {n} Spule(n) verwendet. Trotzdem löschen? (Profile auf den Spulen bleiben erhalten)', { code, n: used }) : t('Drucker {code} löschen?', { code }))) return;
@@ -1114,6 +1323,7 @@
     saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
   }
 
+  // true if h looks like "#RRGGBB".
   const isHex = h => /^#[0-9a-f]{6}$/i.test(String(h || ''));
 
   function setColorHex(name, hex) {
@@ -1132,6 +1342,7 @@
     saveSettings(); refreshLists(); renderSettings();
   }
 
+  // Store/delete a fixed empty weight for brand + size (empty field = delete).
   function setEmptyWeight(vendor, size, value) {
     const g = Math.round(num(value));
     settings.emptyWeights[vendor] = settings.emptyWeights[vendor] || {};
@@ -1148,7 +1359,7 @@
     saveSettings(); refreshLists(); renderSettings();
   }
 
-  // Farbwert im Spulen-Formular geändert -> passenden Namen vorschlagen
+  // Colour picker in the spool form changed -> fill in the matching colour name if known.
   function colorHexChanged() {
     const name = colorNameForHex($('inColorHex').value);
     const curName = $('inColorName').value.trim();
@@ -1162,7 +1373,8 @@
     saveSettings(); refreshLists(); renderSettings();
   }
 
-  // ---------------- Backup ----------------
+  // ---------------- Backup file (export / import) ----------------
+  // Whole state (settings + inventory) as one JSON file in Downloads.
   function exportBackup() {
     const data = { app: "filament-nfc", version: 2, exported: new Date().toISOString(), settings, spools };
     download(`filament-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 2), 'application/json');
@@ -1170,6 +1382,8 @@
     localStorage.removeItem('fnfc_dirty');
   }
 
+  // Read a backup file chosen by the user. Replaces the current data after a
+  // confirmation; duplicate IDs inside the file are merged (dedupeSpools).
   async function importBackup(file) {
     if (!file) return;
     try {
@@ -1187,26 +1401,34 @@
     finally { $('importFile').value = ""; }
   }
 
-  // Formular-Änderungen live in die Größenanzeige übernehmen
+  // One global listener instead of one per field ("event delegation"): any
+  // input inside the spool tab updates the tag-size display.
   document.addEventListener('input', e => { if (e.target.closest('#scanner') && e.target.type !== 'checkbox') updateSizeInfo(); });
 
   // ===================================================================
-  // AUTO-BACKUP über filament_server.py (Termux)
-  // Jede Änderung geht als Journal-Eintrag an den Server (inkrementell),
-  // einmal täglich zusätzlich ein Vollstand. Ist der Server nicht erreichbar,
-  // werden Einträge gesammelt und später nachgeschickt.
+  // OPTIONAL: AUTO BACKUP VIA filament_server.py (Termux on the phone)
+  // -------------------------------------------------------------------
+  // Only active if the app is opened from that local server. Then every
+  // change is sent as a journal entry (incremental, like a transaction
+  // log), plus one full snapshot per day. If the server is unreachable,
+  // entries wait in a queue (fnfc_pending) and are sent later.
+  // On GitHub Pages there is no server: /api/ping fails and all of this
+  // stays switched off.
+  // fetch() = HTTP request from JavaScript; returns a "promise" we await.
   // ===================================================================
   let backupServer = false;
   let pending = loadJSON('fnfc_pending', []);
 
+  // Queue one change and try to send it. Does nothing unless a server was ever seen.
   function journal(entry) {
-    if (!localStorage.getItem('fnfc_serverSeen')) return;   // kein Termux im Einsatz -> nichts sammeln
+    if (!localStorage.getItem('fnfc_serverSeen')) return;   // no Termux server in use -> don't queue anything
     entry.ts = new Date().toISOString();
     pending.push(entry);
     localStorage.setItem('fnfc_pending', JSON.stringify(pending));
     flushJournal();
   }
 
+  // Send all queued entries in one POST; remove them from the queue only on success.
   async function flushJournal() {
     if (!backupServer || !pending.length) { showBackupStatus(); return; }
     const batch = pending.slice();
@@ -1215,10 +1437,11 @@
       if (!r.ok) throw new Error(r.status);
       pending = pending.slice(batch.length);
       localStorage.setItem('fnfc_pending', JSON.stringify(pending));
-    } catch (e) { /* Server weg – bleibt in der Warteschlange */ }
+    } catch (e) { /* server gone – entries stay queued */ }
     showBackupStatus();
   }
 
+  // Full copy of the state to the server (backups/snapshot-YYYY-MM-DD.json).
   async function sendSnapshot(manual = false) {
     if (!backupServer) return;
     const data = { app: "filament-nfc", version: 2, exported: new Date().toISOString(), settings, spools };
@@ -1234,7 +1457,7 @@
   function showBackupStatus() {
     const el = $('autoBackupStatus');
     if (!el) return;
-    // Termux-Server ist optional: Status nur zeigen, wenn er läuft oder Änderungen warten
+    // The server is optional: only show this status line if it runs or entries are waiting.
     el.style.display = (backupServer || pending.length) ? '' : 'none';
     const last = localStorage.getItem('fnfc_lastSnapshot') || '–';
     if (backupServer) {
@@ -1248,6 +1471,7 @@
     }
   }
 
+  // Startup: is the server there? If local data is empty but the server has a backup, offer to restore.
   async function initBackup() {
     try {
       const r = await fetch('/api/ping', { cache: 'no-store' });
@@ -1258,7 +1482,7 @@
     showBackupStatus();
     if (!backupServer) return;
 
-    // Browserdaten gelöscht? Dann Stand vom Handy anbieten.
+    // Browser data was cleared? Offer the server's copy.
     if (!spools.length && !localStorage.getItem('fnfc_settings')) {
       try {
         const state = await (await fetch('/api/state', { cache: 'no-store' })).json();
@@ -1271,7 +1495,7 @@
           saveSpools();
           initApp();
         }
-      } catch (e) { /* keine Sicherung vorhanden */ }
+      } catch (e) { /* no backup available */ }
     }
 
     await flushJournal();
@@ -1280,20 +1504,24 @@
   }
 
   // ===================================================================
-  // Speicherung ohne Server
+  // STORAGE WITHOUT SERVER (the normal case on GitHub Pages)
   // ===================================================================
+  // opts = switches in Settings → Backup. Object.assign merges the saved
+  // values over the defaults, so new options get a default automatically.
   let opts = Object.assign({ dailyFile: true, autoAdd: true }, loadJSON('fnfc_opts', {}));
   function setOpt(k, v) { opts[k] = v; localStorage.setItem('fnfc_opts', JSON.stringify(opts)); showStorageStatus(); }
 
-  // Ohne Server darf ein Browser nicht still Dateien schreiben. Statt beim Speichern
-  // (stört das NFC-Schreiben) einen Download auszulösen, merkt sich die App nur, dass
-  // es Änderungen gibt, und zeigt nach spätestens 7 Tagen einen Hinweis mit Button.
+  // Backup reminder. A web page may not write files silently – only right
+  // after a user tap. So we don't download anything automatically; we only
+  // remember that something changed (fnfc_dirty) and, if the last backup file
+  // is older than BACKUP_DAYS, show a notice in Settings plus a dot on the tab.
   const BACKUP_DAYS = 7;
-  function dailyFileBackup() {           // wird nach jeder Änderung aufgerufen
+  function dailyFileBackup() {           // called after every change (name kept for history)
     localStorage.setItem('fnfc_dirty', '1');
     showBackupBar();
   }
 
+  // Decide whether the reminder is due and show/hide it. Days = ms difference / 86 400 000.
   function showBackupBar() {
     const bar = $('backupBar');
     const last = localStorage.getItem('fnfc_lastFile');
@@ -1306,12 +1534,16 @@
       : t('Noch keine Sicherungsdatei angelegt.');
   }
 
+  // "Back up now" / "Export backup" buttons.
   function manualBackup() {
     exportBackup();
     showBackupBar();
     showStorageStatus();
   }
 
+  // Persistent storage: by default Android may delete website data when the
+  // phone runs low on space. navigator.storage.persist() asks to exempt this
+  // app; installed apps usually get it granted.
   let persisted = null;
   async function showStorageStatus() {
     $('optDailyFile').checked = !!opts.dailyFile;
@@ -1332,10 +1564,14 @@
     showStorageStatus();
   }
 
+  // Register the service worker (sw.js): a small script the browser keeps
+  // running in the background. It caches the app files so the app starts
+  // offline and can be installed. Not possible when opened as a local file.
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
+  // ---------------- Help texts (one HTML block per language) ----------------
   const HELP = {
     de: `
       <div class="card"><h4>Filament NFC – Kurzanleitung</h4>
@@ -1442,6 +1678,11 @@
   };
   function renderHelp() { $('helpContent').innerHTML = HELP[LANG] || HELP.en; }
 
+  // ===================================================================
+  // STARTUP – runs once when the page is loaded
+  // ===================================================================
+  // Translate the static HTML, then watch for elements added later
+  // (MutationObserver = callback whenever the page structure changes).
   translateNode(document.body);
   if (LANG !== 'de') new MutationObserver(muts => {
     for (const m of muts) for (const n of m.addedNodes) translateNode(n);
