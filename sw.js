@@ -1,7 +1,7 @@
 // Service Worker: speichert die App auf dem Handy, damit sie auch offline startet.
 // Bei einer neuen App-Version CACHE hochzählen (z.B. "filament-v2"), dann lädt
 // das Handy beim nächsten Online-Start die neuen Dateien.
-const CACHE = "filament-v3";
+const CACHE = "filament-v4";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {

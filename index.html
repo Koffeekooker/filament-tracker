@@ -94,7 +94,7 @@
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('scanner', this)">Spule</button>
     <button class="tab-btn" onclick="switchTab('inventory', this)">Inventar</button>
-    <button class="tab-btn" onclick="switchTab('settings', this)">Verwaltung</button>
+    <button class="tab-btn" onclick="switchTab('settings', this)">Verwaltung<span id="settingsBadge" style="display:none; color:#ffc107;"> ●</span></button>
     <button class="tab-btn" onclick="switchTab('help', this)" style="flex:0.6;">Hilfe</button>
   </div>
 
@@ -122,10 +122,6 @@
         <button class="btn-secondary" onclick="loadDemoTag()">Demo laden</button>
       </div>
       <div id="log">Bereit.</div>
-      <div id="backupBar" style="display:none; padding:10px; background:#3a2f00; border-left:4px solid #ffc107; font-size:13px; margin-bottom:12px;">
-        <span id="backupBarText"></span>
-        <button class="btn-secondary btn-small" style="margin-top:8px; display:block;" onclick="manualBackup()">Jetzt sichern</button>
-      </div>
     </div>
 
     <div class="card" style="border-left: 3px solid var(--primary);">
@@ -169,7 +165,7 @@
         <input type="checkbox" id="chkSummary" onchange="updateSizeInfo()"> Zusätzliche Klartext-Zeile (~70 Bytes, nur bei wenigen Profilen)
       </label>
       <div id="sizeInfo"></div>
-      <button class="btn-success" onclick="saveToTag()">Speichern &amp; auf NFC schreiben</button>
+      <button class="btn-success" onclick="saveToTag()">Auf NFC-Tag schreiben</button>
       <button class="btn-secondary" onclick="saveLocalOnly()">Nur lokal speichern</button>
     </div>
   </div>
@@ -200,6 +196,10 @@
 
     <div class="card">
       <h4>Datensicherung</h4>
+      <div id="backupBar" style="display:none; padding:10px; background:#3a2f00; border-left:4px solid #ffc107; font-size:13px; margin-bottom:12px;">
+        <span id="backupBarText"></span>
+        <button class="btn-secondary btn-small" style="margin-top:8px; display:block;" onclick="manualBackup()">Jetzt sichern</button>
+      </div>
       <div id="storageStatus" class="hint" style="padding:8px; background:#1a1a1a; border-radius:4px; margin-bottom:10px;"></div>
       <label style="display:flex; align-items:center;">
         <input type="checkbox" id="optDailyFile" onchange="setOpt('dailyFile', this.checked)"> An Sicherungsdatei erinnern (nach Änderungen, spätestens alle 7 Tage)
@@ -251,7 +251,7 @@
     "Bett leer = globaler Wert. PA = Pressure/Linear Advance.": "Empty bed = spool default. PA = pressure/linear advance.",
     "Profil hinzufügen": "Add profile",
     "Zusätzliche Klartext-Zeile (~70 Bytes, nur bei wenigen Profilen)": "Extra plain-text line (~70 bytes, only with few profiles)",
-    "Speichern & auf NFC schreiben": "Save & write to NFC", "Nur lokal speichern": "Save locally only",
+     "Nur lokal speichern": "Save locally only",
     "z.B. Polymaker": "e.g. Polymaker", "z.B. PLA CF": "e.g. PLA CF", "z.B. Schwarz": "e.g. Black", "wiegen": "weigh",
     "Noch keine Profile auf dieser Spule.": "No profiles on this spool yet.", "unbekannt": "unknown",
     "Tag-Belegung: {size} / {cap} Bytes": "Tag usage: {size} / {cap} bytes", "zu groß": "too large",
@@ -264,10 +264,10 @@
     "Bitte mindestens Hersteller und Material angeben.": "Please enter at least brand and material.",
     "Spule {id} lokal gespeichert (Tag nicht verändert).": "Spool {id} saved locally (tag unchanged).",
     "Zu groß für den Tag ({size}/{cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.": "Too large for the tag ({size}/{cap} bytes). Untick the plain-text line or remove profiles.",
-    "Lokal gespeichert. Web NFC hier nicht verfügbar ({size}/{cap} Bytes).": "Saved locally. Web NFC not available here ({size}/{cap} bytes).",
-    "Lokal gespeichert. Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)": "Saved locally. Now hold the phone to the tag… ({size}/{cap} bytes)",
+    "Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)": "Now hold the phone to the tag… ({size}/{cap} bytes)",
     "Auf Tag geschrieben und gespeichert ({size}/{cap} Bytes).": "Written to tag and saved ({size}/{cap} bytes).",
-    "Lokal gespeichert, aber NFC-Schreibfehler: {err}": "Saved locally, but NFC write error: {err}",
+    "NFC-Schreibfehler: {err}": "NFC write error: {err}", "Auf NFC-Tag schreiben": "Write to NFC tag",
+    "Auf Tag geschrieben ({size}/{cap} Bytes).": "Written to tag ({size}/{cap} bytes).",
     "Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig.": "Web NFC not available – requires Chrome on Android via https:// or localhost.",
     "Scanner aktiv – Handy an die Spule halten…": "Scanner active – hold the phone to the spool…",
     "Tag nicht lesbar – nochmal versuchen.": "Tag not readable – please try again.",
@@ -306,7 +306,6 @@
     "An Sicherungsdatei erinnern (nach Änderungen, spätestens alle 7 Tage)": "Remind me to save a backup file (after changes, at least every 7 days)",
     "Letzte Sicherungsdatei vor {d} Tagen – es gibt neue Änderungen.": "Last backup file {d} days ago – there are new changes.",
     "Noch keine Sicherungsdatei angelegt.": "No backup file created yet.",
-    "Sicherungsdatei in „Downloads“ gespeichert.": "Backup file saved to “Downloads”.",
     "Tägliche Sicherungsdatei in „Downloads“ (beim ersten Speichern des Tages)": "Daily backup file in “Downloads” (on the first save of the day)",
     "Gelesene Tags automatisch ins Inventar übernehmen": "Add scanned tags to the inventory automatically",
     "Jetzt Vollsicherung im Termux-Ordner anlegen": "Create full backup in the Termux folder now",
@@ -726,17 +725,18 @@
       updateLog(t('Zu groß für den Tag ({size}/{cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.', { size, cap }), true);
       return;
     }
-    storeLocal();
-    if (!("NDEFReader" in window)) { updateLog(t('Lokal gespeichert. Web NFC hier nicht verfügbar ({size}/{cap} Bytes).', { size, cap })); return; }
+    if (!("NDEFReader" in window)) { updateLog(t("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig."), true); return; }
 
     const records = [{ recordType: "mime", mediaType: "application/json", data: new TextEncoder().encode(json) }];
     if (text) records.push({ recordType: "text", lang: "en", data: text });
-    updateLog(t('Lokal gespeichert. Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }));
+    updateLog(t('Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }));
     try {
       await (nfcReader || new NDEFReader()).write({ records });
-      updateLog('✔ ' + t('Auf Tag geschrieben und gespeichert ({size}/{cap} Bytes).', { size, cap }));
+      // Erst nach erfolgreichem Schreiben: Inventar-Eintrag an den Tag-Inhalt angleichen
+      storeLocal();
+      updateLog('✔ ' + t('Auf Tag geschrieben ({size}/{cap} Bytes).', { size, cap }));
     } catch (err) {
-      updateLog(t('Lokal gespeichert, aber NFC-Schreibfehler: {err}', { err: err.message || err }), true);
+      updateLog(t('NFC-Schreibfehler: {err}', { err: err.message || err }), true);
     }
   }
 
@@ -1176,6 +1176,7 @@
     const days = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : Infinity;
     const due = opts.dailyFile && !backupServer && localStorage.getItem('fnfc_dirty') && spools.length && days >= BACKUP_DAYS;
     bar.style.display = due ? '' : 'none';
+    $('settingsBadge').style.display = due ? '' : 'none';
     if (due) $('backupBarText').textContent = last
       ? t('Letzte Sicherungsdatei vor {d} Tagen – es gibt neue Änderungen.', { d: days })
       : t('Noch keine Sicherungsdatei angelegt.');
@@ -1185,7 +1186,6 @@
     exportBackup();
     showBackupBar();
     showStorageStatus();
-    updateLog(t('Sicherungsdatei in „Downloads“ gespeichert.'));
   }
 
   let persisted = null;
@@ -1227,13 +1227,13 @@
           <li><b>Spule → Neue Spule</b> tippen. Die App vergibt eine 4-stellige ID.</li>
           <li>Hersteller, Material (z.B. „PLA CF“ = Typ PLA, Variante CF), Farbe und Temperaturbereich eintragen.</li>
           <li>Unter <b>Druckerprofile</b> für jeden Drucker ein Profil hinzufügen und die kalibrierten Werte eintragen.</li>
-          <li><b>Speichern &amp; auf NFC schreiben</b> tippen, dann das Handy an den Tag halten (Mitte der Rückseite), bis „✔ Auf Tag geschrieben“ erscheint.</li>
+          <li><b>Auf NFC-Tag schreiben</b> tippen, dann das Handy an den Tag halten (Mitte der Rückseite), bis „✔ Auf Tag geschrieben“ erscheint. Das Inventar wird dabei automatisch angeglichen.</li>
         </ol>
         <p class="hint">Die Anzeige „Tag-Belegung“ zeigt, wie voll der Tag wird. Ist er zu voll, verhindert die App das Schreiben.</p></details>
       <details class="card"><summary>3. Spule lesen</summary>
         <p><b>NFC-Tag lesen</b> tippen und Handy an die Spule halten. Der Scanner bleibt aktiv, du kannst nacheinander mehrere Spulen lesen. Unbekannte Spulen landen automatisch im Inventar (abschaltbar in der Verwaltung). Auch fremde OpenSpool-Tags werden erkannt.</p></details>
       <details class="card"><summary>4. Restgewicht aktualisieren</summary>
-        <ol><li>Spule lesen.</li><li>Spule auf die Küchenwaage legen und den Wert bei <b>Waage brutto</b> eintragen – das Netto wird mit dem Leergewicht berechnet.</li><li>Speichern &amp; auf NFC schreiben.</li></ol></details>
+        <ol><li>Spule lesen.</li><li>Spule auf die Küchenwaage legen und den Wert bei <b>Waage brutto</b> eintragen – das Netto wird mit dem Leergewicht berechnet.</li><li>Auf NFC-Tag schreiben.</li></ol></details>
       <details class="card"><summary>5. Profil für den Slicer exportieren</summary>
         <p>In jeder Druckerkarte gibt es die Buttons <b>PrusaSlicer</b> und <b>Orca</b>. Die Datei landet in „Downloads“.</p>
         <ul>
@@ -1253,7 +1253,7 @@
       <details class="card"><summary>7. Datensicherung</summary>
         <ul>
           <li>Die Daten liegen in der App auf dem Handy.</li>
-          <li>Gibt es Änderungen und ist die letzte Sicherungsdatei älter als 7 Tage, erscheint oben ein gelber Hinweis. <b>Jetzt sichern</b> legt die Datei in „Downloads“ ab. Jederzeit möglich über <b>Verwaltung → Backup exportieren</b>.</li>
+          <li>Gibt es Änderungen und ist die letzte Sicherungsdatei älter als 7 Tage, zeigt der Tab <b>Verwaltung</b> einen gelben Punkt und unter Datensicherung einen Hinweis. <b>Jetzt sichern</b> legt die Datei in „Downloads“ ab. Jederzeit möglich über <b>Verwaltung → Backup exportieren</b>.</li>
           <li>Wiederherstellen: <b>Verwaltung → Backup importieren</b> – oder einfach alle Spulen abscannen, denn alle wichtigen Daten stehen auf den Tags.</li>
         </ul></details>
       <details class="card"><summary>8. Probleme?</summary>
@@ -1277,13 +1277,13 @@
           <li>Tap <b>Spool → New spool</b>. The app assigns a 4-character ID.</li>
           <li>Enter brand, material (e.g. “PLA CF” = type PLA, variant CF), colour and temperature range.</li>
           <li>Under <b>Printer profiles</b>, add a profile for each printer and enter your calibrated values.</li>
-          <li>Tap <b>Save &amp; write to NFC</b>, then hold the phone to the tag (middle of the back) until “✔ Written to tag” appears.</li>
+          <li>Tap <b>Write to NFC tag</b>, then hold the phone to the tag (middle of the back) until “✔ Written to tag” appears.</li>
         </ol>
         <p class="hint">“Tag usage” shows how full the tag gets. If it is too full, the app won't write.</p></details>
       <details class="card"><summary>3. Read a spool</summary>
         <p>Tap <b>Read NFC tag</b> and hold the phone to the spool. The scanner stays active, so you can read several spools in a row. Unknown spools are added to the inventory automatically (can be turned off in Settings). Foreign OpenSpool tags are recognised too.</p></details>
       <details class="card"><summary>4. Update remaining weight</summary>
-        <ol><li>Read the spool.</li><li>Put it on a kitchen scale and enter the value under <b>Scale gross</b> – net weight is calculated from the empty spool weight.</li><li>Save &amp; write to NFC.</li></ol></details>
+        <ol><li>Read the spool.</li><li>Put it on a kitchen scale and enter the value under <b>Scale gross</b> – net weight is calculated from the empty spool weight.</li><li>Write to NFC tag.</li></ol></details>
       <details class="card"><summary>5. Export a slicer profile</summary>
         <p>Each printer card has <b>PrusaSlicer</b> and <b>Orca</b> buttons. The file is saved to “Downloads”.</p>
         <ul>
@@ -1303,7 +1303,7 @@
       <details class="card"><summary>7. Backup</summary>
         <ul>
           <li>Data is stored inside the app on your phone.</li>
-          <li>If there are changes and the last backup file is older than 7 days, a yellow notice appears at the top. <b>Back up now</b> saves the file to “Downloads”. Available any time via <b>Settings → Export backup</b>.</li>
+          <li>If there are changes and the last backup file is older than 7 days, the <b>Settings</b> tab shows a yellow dot and a notice under Backup. <b>Back up now</b> saves the file to “Downloads”. Available any time via <b>Settings → Export backup</b>.</li>
           <li>Restore: <b>Settings → Import backup</b> – or simply scan all spools, as all important data is on the tags.</li>
         </ul></details>
       <details class="card"><summary>8. Problems?</summary>
