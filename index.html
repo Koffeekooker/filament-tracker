@@ -50,7 +50,7 @@
     .tabs { display: flex; background: var(--bg-card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
     .tab-btn { flex: 1; padding: 15px 5px; font-weight: bold; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; margin: 0; border-radius: 0; }
     .tab-btn.active { color: var(--primary); border-bottom: 3px solid var(--primary); }
-    .tab-content { display: none; padding: 15px; max-width: 600px; margin: 0 auto; }
+    .tab-content { display: none; padding: 15px 15px 90px; max-width: 600px; margin: 0 auto; }
     .tab-content.active { display: block; }
 
     h4 { margin: 0 0 10px; }
@@ -75,6 +75,13 @@
     .btn-secondary { background: var(--bg-input); color: white; border: 1px solid var(--border); }
     .btn-small { padding: 6px 10px; font-size: 12px; width: auto; margin-bottom: 0; }
 
+    #toast { position: fixed; left: 12px; right: 12px; bottom: 16px; z-index: 20; max-width: 576px; margin: 0 auto;
+      padding: 14px 16px; border-radius: 10px; font-size: 15px; font-weight: 600; color: white;
+      background: #1f3b63; border-left: 6px solid var(--primary); box-shadow: 0 6px 24px rgba(0,0,0,.6);
+      transform: translateY(150%); transition: transform .25s ease; }
+    #toast.show { transform: translateY(0); }
+    #toast.ok { background: #14432c; border-left-color: #2ecc71; }
+    #toast.err { background: #5a1a20; border-left-color: var(--danger); }
     #log { padding: 10px; background: var(--bg-input); border-left: 4px solid var(--primary); font-size: 13px; margin-bottom: 12px; min-height: 20px; }
     #sizeInfo { font-size: 12px; color: var(--muted); margin: -4px 0 10px; }
     .printer-profile { border: 1px solid #444; padding: 10px; border-radius: 6px; margin-bottom: 10px; background: #1a1a1a; }
@@ -231,6 +238,7 @@
     <div id="helpContent"></div>
   </div>
 
+  <div id="toast" onclick="hideToast()"></div>
   <datalist id="dlVendors"></datalist>
   <datalist id="dlMaterials"></datalist>
   <datalist id="dlColors"></datalist>
@@ -521,10 +529,22 @@
   }
 
   // ---------------- UI ----------------
-  function updateLog(msg, isError = false) {
+  // Meldung oben im Spulen-Tab UND als Einblendung unten am Bildschirm,
+  // damit man das Ergebnis sieht, ohne nach oben scrollen zu müssen.
+  // sticky = bleibt stehen (z.B. "Handy an den Tag halten…"), bis die nächste Meldung kommt.
+  let toastTimer = null;
+  function updateLog(msg, isError = false, sticky = false) {
     $('log').innerText = msg;
     $('log').style.borderLeftColor = isError ? 'var(--danger)' : 'var(--primary)';
+    const el = $('toast');
+    el.textContent = msg;
+    el.className = 'show ' + (isError ? 'err' : msg.startsWith('✔') ? 'ok' : '');
+    clearTimeout(toastTimer);
+    if (!sticky) toastTimer = setTimeout(hideToast, isError ? 7000 : 4000);
+    // Kurzes Vibrieren als Rückmeldung (wenn das Handy es unterstützt)
+    try { if (isError) navigator.vibrate([90, 60, 90]); else if (msg.startsWith('✔')) navigator.vibrate(80); } catch (e) {}
   }
+  function hideToast() { $('toast').classList.remove('show'); }
 
   function switchTab(tabId, btn) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -780,7 +800,7 @@
 
     const records = [{ recordType: "mime", mediaType: "application/json", data: new TextEncoder().encode(json) }];
     if (text) records.push({ recordType: "text", lang: "en", data: text });
-    updateLog(t('Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }));
+    updateLog(t('Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }), false, true);
     try {
       await (nfcReader || new NDEFReader()).write({ records });
       // Erst nach erfolgreichem Schreiben: Inventar-Eintrag an den Tag-Inhalt angleichen
@@ -800,7 +820,7 @@
     try {
       nfcReader = new NDEFReader();
       await nfcReader.scan();
-      updateLog(t("Scanner aktiv – Handy an die Spule halten…"));
+      updateLog(t("Scanner aktiv – Handy an die Spule halten…"), false, true);
       nfcReader.onreadingerror = () => updateLog(t("Tag nicht lesbar – nochmal versuchen."), true);
       nfcReader.onreading = ev => handleTag(ev.message.records);
     } catch (err) {
@@ -840,7 +860,7 @@
       spools.push(entry); saveSpools(); journal({ op: 'spool', data: entry });
       known = true; note = " " + t("Ins Inventar übernommen.");
     }
-    updateLog(t("Spule {id} gelesen: {name}.", { id: cur.id, name: cur.brand + " " + cur.material }) + (known ? "" : " (" + t("noch nicht im Inventar") + ")") + note);
+    updateLog('✔ ' + t("Spule {id} gelesen: {name}.", { id: cur.id, name: cur.brand + " " + cur.material }) + (known ? "" : " (" + t("noch nicht im Inventar") + ")") + note);
   }
 
   // ---------------- Inventar ----------------
