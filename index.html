@@ -140,6 +140,10 @@
     #toast.ok { background: #14432c; border-left-color: #2ecc71; }
     #toast.err { background: #5a1a20; border-left-color: var(--danger); }
     #log { padding: 10px; background: var(--bg-input); border-left: 4px solid var(--primary); font-size: 13px; margin-bottom: 12px; min-height: 20px; }
+    /* Choice dialog: dark overlay over the whole screen, box in the middle */
+    #modal { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .modal-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; max-width: 520px; width: 100%; }
+    .modal-box button { margin-bottom: 8px; }
     /* Tag status dot: green = tag is up to date, red = changes not written, grey = unknown */
     .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
     .dot.ok { background: #2ecc71; } .dot.changed { background: var(--danger); } .dot.unknown { background: #777; }
@@ -310,6 +314,16 @@
     <div id="helpContent"></div>
   </div>
 
+  <!-- Choice dialog with two labelled buttons (see askChoice). Hidden until needed. -->
+  <div id="modal" style="display:none;">
+    <div class="modal-box">
+      <h4 id="modalTitle"></h4>
+      <div id="modalText" class="hint" style="font-size:14px; white-space:pre-line; margin-bottom:14px;"></div>
+      <button id="modalA" class="btn-success"></button>
+      <button id="modalB" class="btn-secondary"></button>
+    </div>
+  </div>
+
   <!-- Bottom pop-up message (see updateLog). Tap to close. -->
   <div id="toast" onclick="hideToast()"></div>
   <!-- <datalist> = suggestion list for a text field (input list="dlVendors").
@@ -401,6 +415,13 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Backup
     "Datensicherung": "Backup",
+    "Farbe": "Colour",
+    "Spule {id}: Inventar und Tag unterscheiden sich": "Spool {id}: inventory and tag differ",
+    "Inventar → Tag:": "Inventory → tag:",
+    "Inventar-Werte laden (danach auf den Tag schreiben)": "Load inventory values (then write them to the tag)",
+    "Werte vom Tag übernehmen (Inventar überschreiben)": "Use the tag values (overwrite inventory)",
+    "Spule {id}: Inventar-Werte geladen – bitte auf den Tag schreiben.": "Spool {id}: inventory values loaded – please write them to the tag.",
+    "Inventar mit den Werten vom Tag aktualisiert.": "Inventory updated with the tag values.",
     "Tag ist aktuell": "Tag is up to date",
     "Änderungen noch nicht auf dem Tag": "Changes not written to the tag yet",
     "Noch nicht auf einen Tag geschrieben": "Not written to a tag yet",
@@ -1290,8 +1311,48 @@
     return null;
   }
 
+  // Show the choice dialog. Returns a promise that resolves to 'a' or 'b'
+  // when one of the two buttons is tapped – so the caller can simply write
+  //   const choice = await askChoice(...);
+  // like a blocking READLN, while the browser stays responsive.
+  function askChoice(title, text, labelA, labelB) {
+    return new Promise(resolve => {
+      $('modalTitle').textContent = title;
+      $('modalText').textContent = text;
+      $('modalA').textContent = labelA;
+      $('modalB').textContent = labelB;
+      $('modal').style.display = 'flex';
+      const done = choice => { $('modal').style.display = 'none'; resolve(choice); };
+      $('modalA').onclick = () => done('a');
+      $('modalB').onclick = () => done('b');
+    });
+  }
+
+  // List the differences between two spool records (inventory vs. tag) as
+  // readable lines, e.g. "Rest: 400 g → 250 g". Printer profiles are compared
+  // as their compact text lines.
+  function spoolDiff(a, b) {
+    const fields = [['brand', t('Hersteller')], ['material', 'Material'], ['hex', t('Farbe')],
+                    ['tmin', t('Düse min °C')], ['tmax', t('Düse max °C')], ['bed', t('Bett °C')],
+                    ['abr', t('Abrasiv')], ['ew', t('Leergewicht g')], ['r', t('Rest netto g')]];
+    const lines = [];
+    for (const [f, label] of fields) {
+      const x = String(a[f] ?? '').toUpperCase(), y = String(b[f] ?? '').toUpperCase();
+      if (x !== y && !(num(x) === 0 && num(y) === 0 && !isNaN(x) && !isNaN(y))) lines.push(`${label}: ${a[f] ?? '–'} → ${b[f] ?? '–'}`);
+    }
+    const codes = new Set([...Object.keys(a.cfg || {}), ...Object.keys(b.cfg || {})]);
+    for (const c of codes) {
+      const x = a.cfg && a.cfg[c] ? profileToString(a.cfg[c]) : '–';
+      const y = b.cfg && b.cfg[c] ? profileToString(b.cfg[c]) : '–';
+      if (x !== y) lines.push(`${(settings.printers[c] || {}).name || c}: ${x} → ${y}`);
+    }
+    return lines;
+  }
+
   // Called with the records of a detected tag (no write pending): convert into `cur` and show it.
-  function handleTag(records) {
+  let tagBusy = false;   // ignore further tag reads while the choice dialog is open
+  async function handleTag(records) {
+    if (tagBusy) return;
     const data = parseSpoolRecords(records);
     if (!data) { updateLog(t(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben."), true); return; }
 
@@ -1304,6 +1365,37 @@
     // entry's values match the tag, its dot turns green; if not, red
     // (the inventory holds changes that were never written).
     if (inv && cur.tag && inv.tag !== cur.tag) { inv.tag = cur.tag; saveSpools(); }
+
+    // Inventory and tag disagree (e.g. saved locally without writing, or the tag
+    // was written elsewhere)? Then the user decides which version is valid.
+    if (inv && cur.tag && JSON.stringify(toTagJSON(inv)) !== cur.tag) {
+      const diff = spoolDiff(inv, cur);
+      tagBusy = true;
+      const choice = await askChoice(
+        t('Spule {id}: Inventar und Tag unterscheiden sich', { id: cur.id }),
+        t('Inventar → Tag:') + '\n' + diff.slice(0, 8).join('\n') + (diff.length > 8 ? '\n…' : ''),
+        t('Inventar-Werte laden (danach auf den Tag schreiben)'),
+        t('Werte vom Tag übernehmen (Inventar überschreiben)'));
+      tagBusy = false;
+      if (choice === 'a') {
+        // Keep the local changes: show the inventory version; cur.tag still
+        // describes the real tag content, so the dot shows red until written.
+        const tagContent = cur.tag;
+        cur = Object.assign(emptySpool(), clone(inv));
+        delete cur.updated;
+        cur.tag = tagContent;
+        $('numScaleWt').value = "";
+        renderForm();
+        switchTab('scanner', document.querySelector('.tab-btn'));
+        updateLog(t('Spule {id}: Inventar-Werte geladen – bitte auf den Tag schreiben.', { id: cur.id }));
+        return;
+      }
+      // Take the tag version: overwrite the inventory entry (keep phone-only data).
+      cur.nw = inv.nw || cur.nw; if (!cur.cn && inv.hex === cur.hex) cur.cn = inv.cn || "";
+      const entry = clone(cur); entry.updated = new Date().toISOString();
+      spools[spools.indexOf(inv)] = entry; saveSpools(); journal({ op: 'spool', data: entry });
+      note = " " + t("Inventar mit den Werten vom Tag aktualisiert.");
+    }
     if (inv && inv.nw) { cur.nw = inv.nw; $('selSize').value = String(inv.nw); }
     if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
     if (!cur.id) { cur.id = generateID(); cur.tag = ""; note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
