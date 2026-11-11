@@ -1300,6 +1300,10 @@
     // Known spool: take phone-only data (spool size, colour name) from the inventory.
     const inv = spools.find(s => s.id === cur.id);
     let note = "";
+    // Remember in the inventory entry what is actually on this tag. If the
+    // entry's values match the tag, its dot turns green; if not, red
+    // (the inventory holds changes that were never written).
+    if (inv && cur.tag && inv.tag !== cur.tag) { inv.tag = cur.tag; saveSpools(); }
     if (inv && inv.nw) { cur.nw = inv.nw; $('selSize').value = String(inv.nw); }
     if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
     if (!cur.id) { cur.id = generateID(); cur.tag = ""; note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
