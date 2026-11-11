@@ -159,7 +159,7 @@
         <div style="grid-column: span 2;"><p id="ewHint" class="hint" style="margin:22px 0 0; font-size:12px;"></p></div>
       </div>
       <div class="grid-3">
-        <div><label>Leergewicht g</label><input type="number" id="numEmptyWt" inputmode="numeric" oninput="this.dataset.auto='0'; calcNetWeight(); applyEWSuggestion()"></div>
+        <div><label>Leergewicht g</label><input type="number" id="numEmptyWt" inputmode="numeric" oninput="this.dataset.auto='0'; calcNetWeight()"></div>
         <div><label>Waage brutto g</label><input type="number" id="numScaleWt" inputmode="numeric" oninput="calcNetWeight()" placeholder="wiegen"></div>
         <div><label>Rest netto g</label><input type="number" id="numNetWt" inputmode="numeric" style="color:#00ff66;"></div>
       </div>
@@ -292,8 +292,6 @@
     "Leerer Tag – 'Neue Spule' anlegen und schreiben.": "Empty tag – create a 'New spool' and write it.",
     "Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt.": "Foreign OpenSpool tag – a new ID was assigned and will be added when saving.",
     "Ins Inventar übernommen.": "Added to inventory.",
-    "Die ID {id} gehört im Inventar schon zu „{a}“, dieser Tag ist „{b}“.\n\nOK = Andere Spule: neue ID vergeben (danach auf den Tag schreiben).\nAbbrechen = Dieselbe Spule, Werte vom Tag übernehmen.": "ID {id} already belongs to “{a}” in the inventory, but this tag is “{b}”.\n\nOK = Different spool: assign a new ID (then write it to the tag).\nCancel = Same spool, take the values from the tag.",
-    "Neue ID {id} vergeben – bitte auf den Tag schreiben.": "New ID {id} assigned – please write it to the tag.",
     "Spule {id} gelesen: {name}.": "Spool {id} read: {name}.", "noch nicht im Inventar": "not in inventory yet",
     "Spule {id} aus dem Inventar geladen.": "Spool {id} loaded from inventory.",
     "Profil \"{name}\" exportiert (Ordner Downloads).": "Profile \"{name}\" exported (Downloads folder).",
@@ -434,22 +432,16 @@
   let spools = loadJSON('fnfc_spools', []);
   if (!Array.isArray(spools)) spools = [];
 
-  // Spulen-IDs sind eindeutig: IDs klein geschrieben, doppelte Einträge zusammenführen
-  // (bei Doppelten gewinnt der zuletzt geänderte). Läuft beim Start, Import und Wiederherstellen.
+  // Nur beim Einspielen eines Backups: doppelte Spulen-IDs zusammenführen
+  // (bei Doppelten gewinnt der zuletzt geänderte Eintrag).
   function dedupeSpools(list) {
     const byId = new Map();
     for (const s of list) {
       if (!s || !s.id) continue;
-      s.id = String(s.id).trim().toLowerCase();
       const old = byId.get(s.id);
       if (!old || String(s.updated || '') >= String(old.updated || '')) byId.set(s.id, s);
     }
     return [...byId.values()];
-  }
-  {
-    const before = spools.length;
-    spools = dedupeSpools(spools);
-    if (spools.length !== before) localStorage.setItem('fnfc_spools', JSON.stringify(spools));
   }
   const saveSettings = () => { localStorage.setItem('fnfc_settings', JSON.stringify(settings)); journal({ op: 'settings', data: settings }); };
   const saveSpools = () => localStorage.setItem('fnfc_spools', JSON.stringify(spools));
@@ -510,7 +502,7 @@
   // Tag-JSON (auch fremde OpenSpool-Tags) -> Spule
   function fromTagJSON(o) {
     const s = emptySpool();
-    s.id = String(o.id || "").trim().toLowerCase();
+    s.id = o.id || "";
     s.brand = o.brand || "";
     s.material = [o.type, o.subtype].filter(Boolean).join(" ");
     let hex = String(o.color_hex || "000000").replace('#', '');
@@ -647,11 +639,13 @@
 
   function sizeLabel(size) { return (size / 1000).toLocaleString(LANG === 'de' ? 'de-DE' : 'en-US') + ' kg'; }
 
+  // Wird nur bei Änderung von Hersteller oder Spulengröße aufgerufen – nie beim Tippen
+  // im Leergewicht-Feld, damit man den Wert frei löschen und neu eingeben kann.
   function applyEWSuggestion() {
     const brand = $('inVendor').value.trim(), size = parseInt($('selSize').value);
     const sug = suggestEW(brand, size), field = $('numEmptyWt'), hint = $('ewHint');
     if (!sug) { hint.textContent = brand ? t('Kein Leergewicht für {b} {s} bekannt.', { b: brand, s: sizeLabel(size) }) : ''; return; }
-    if (field.dataset.auto === '1' || !field.value) {
+    if (field.dataset.auto === '1' || field.value === '') {
       field.value = sug.g; field.dataset.auto = '1';
       calcNetWeight(); updateSizeInfo();
     }
@@ -864,17 +858,8 @@
 
     cur = fromTagJSON(data);
     // Bekannte Spule: Farbname aus dem Inventar übernehmen, falls der Farbwert nicht in der Farbliste steht
-    let inv = spools.find(s => s.id === cur.id);
+    const inv = spools.find(s => s.id === cur.id);
     let note = "";
-    // Gleiche ID, aber offensichtlich andere Spule (z.B. Tag aus einer anderen Installation)?
-    const same = (x, y) => String(x || '').trim().toLowerCase() === String(y || '').trim().toLowerCase();
-    if (inv && (!same(inv.brand, cur.brand) || !same(inv.material, cur.material) || (inv.hex && !same(inv.hex, cur.hex)))) {
-      const a = `${inv.brand} ${inv.material}${inv.cn ? ' ' + inv.cn : ''}`, b = `${cur.brand} ${cur.material}`;
-      if (confirm(t('Die ID {id} gehört im Inventar schon zu „{a}“, dieser Tag ist „{b}“.\n\nOK = Andere Spule: neue ID vergeben (danach auf den Tag schreiben).\nAbbrechen = Dieselbe Spule, Werte vom Tag übernehmen.', { id: cur.id, a, b }))) {
-        cur.id = generateID(); inv = null;
-        note = " " + t("Neue ID {id} vergeben – bitte auf den Tag schreiben.", { id: cur.id });
-      }
-    }
     if (inv && inv.nw) { cur.nw = inv.nw; $('selSize').value = String(inv.nw); }
     if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
     if (!cur.id) { cur.id = generateID(); note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
@@ -1281,7 +1266,7 @@
             confirm(t('Keine lokalen Daten, aber eine Sicherung mit {n} Spule(n) gefunden. Wiederherstellen?', { n: state.spools.length }))) {
           if (state.settings) settings = state.settings;
           for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
-          spools = dedupeSpools(state.spools);
+          spools = state.spools;
           localStorage.setItem('fnfc_settings', JSON.stringify(settings));
           saveSpools();
           initApp();
