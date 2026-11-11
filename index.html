@@ -1003,7 +1003,19 @@
   }
 
   // Printer-profile suggestion for printer `code`. Returns { p, label }.
+  // The bed temperature is always filled in (B on the tag): the learned
+  // profile's own value, otherwise the spool's bed value, otherwise the
+  // Settings / generic value of the material. Visible and editable per printer.
   function suggestProfile(brand, material, code) {
+    const r = suggestProfileBase(brand, material, code);
+    if (!(num(r.p.b) > 0)) {
+      const bed = num(cur.bed) || num(manualFor(material).bed) || num((genericFor(material) || {}).bed);
+      if (bed > 0) r.p.b = bed; else delete r.p.b;
+    }
+    return r;
+  }
+
+  function suggestProfileBase(brand, material, code) {
     const bm = latestSpool(s => s.cfg && s.cfg[code] && sameText(s.brand, brand) && sameText(s.material, material));
     if (bm && material) return { p: clone(bm.cfg[code]), label: t('von deiner Spule {id} ({name})', { id: bm.id, name: bm.brand + ' ' + bm.material }) };
     const m = latestSpool(s => s.cfg && s.cfg[code] && sameText(s.material, material));
