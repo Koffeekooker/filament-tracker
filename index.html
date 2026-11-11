@@ -81,6 +81,11 @@
     .printer-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 6px; flex-wrap: wrap; }
     .swatch { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 1px solid #666; vertical-align: middle; margin-right: 6px; flex: none; }
     .inventory-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    details.card summary { font-weight: bold; cursor: pointer; padding: 2px 0; }
+    details.card[open] summary { margin-bottom: 8px; }
+    details.card ol, details.card ul { padding-left: 20px; margin: 6px 0; line-height: 1.45; font-size: 14px; }
+    details.card p { font-size: 14px; line-height: 1.45; }
+    code { background: var(--bg-input); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
     .list-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 5px; padding: 6px; background: #1a1a1a; border-radius: 4px; }
   </style>
 </head>
@@ -90,6 +95,7 @@
     <button class="tab-btn active" onclick="switchTab('scanner', this)">Spule</button>
     <button class="tab-btn" onclick="switchTab('inventory', this)">Inventar</button>
     <button class="tab-btn" onclick="switchTab('settings', this)">Verwaltung</button>
+    <button class="tab-btn" onclick="switchTab('help', this)" style="flex:0.6;">Hilfe</button>
   </div>
 
   <!-- ===================== MODUL 1: SPULE ===================== -->
@@ -177,6 +183,14 @@
 
   <!-- ===================== MODUL 3: VERWALTUNG ===================== -->
   <div id="settings" class="tab-content">
+    <div class="card">
+      <h4>Sprache / Language</h4>
+      <select id="selLang" onchange="setLang(this.value)" style="margin:0;">
+        <option value="auto">Automatisch / Automatic</option>
+        <option value="de">Deutsch</option>
+        <option value="en">English</option>
+      </select>
+    </div>
     <p class="hint">Vorschlagslisten für die Eingabefelder. Auf dem Tag steht immer der Klartext – diese Listen sind nur eine Eingabehilfe.</p>
     <div id="settingsSections"></div>
 
@@ -200,11 +214,147 @@
     </div>
   </div>
 
+  <!-- ===================== MODUL 4: HILFE ===================== -->
+  <div id="help" class="tab-content">
+    <div id="helpContent"></div>
+  </div>
+
   <datalist id="dlVendors"></datalist>
   <datalist id="dlMaterials"></datalist>
   <datalist id="dlColors"></datalist>
 
 <script>
+  // ===================================================================
+  // MEHRSPRACHIGKEIT
+  // Schlüssel ist immer der deutsche Text. Fehlt eine Übersetzung, wird
+  // Deutsch angezeigt. Neue Sprache: weiteres Objekt in I18N + Option in
+  // #selLang + Hilfetext in HELP ergänzen.
+  // ===================================================================
+  const I18N = { en: {} };
+  I18N.en = {
+    // Navigation
+    "Spule": "Spool", "Inventar": "Inventory", "Verwaltung": "Settings", "Hilfe": "Help",
+    // Spule
+    "Tag-Typ": "Tag type", "NTAG213 (144 Bytes – zu klein)": "NTAG213 (144 bytes – too small)",
+    "Spulen-ID": "Spool ID", "NFC-Tag lesen": "Read NFC tag", "Neue Spule": "New spool", "Demo laden": "Load demo",
+    "Bereit.": "Ready.", "Hersteller": "Brand",
+    "Material (Typ + Variante, z.B. \"PLA CF\")": "Material (type + variant, e.g. \"PLA CF\")",
+    "Farbe (Name + Farbwert)": "Colour (name + value)",
+    "Abrasiv (gehärtete Düse nötig)": "Abrasive (hardened nozzle required)",
+    "Düse min °C": "Nozzle min °C", "Düse max °C": "Nozzle max °C", "Bett °C": "Bed °C",
+    "Leergewicht g": "Empty spool g", "Waage brutto g": "Scale gross g", "Rest netto g": "Remaining net g",
+    "Druckerprofile": "Printer profiles", "Düse °C": "Nozzle °C",
+    "Bett leer = globaler Wert. PA = Pressure/Linear Advance.": "Empty bed = spool default. PA = pressure/linear advance.",
+    "Profil hinzufügen": "Add profile",
+    "Zusätzliche Klartext-Zeile (~70 Bytes, nur bei wenigen Profilen)": "Extra plain-text line (~70 bytes, only with few profiles)",
+    "Speichern & auf NFC schreiben": "Save & write to NFC", "Nur lokal speichern": "Save locally only",
+    "z.B. Polymaker": "e.g. Polymaker", "z.B. PLA CF": "e.g. PLA CF", "z.B. Schwarz": "e.g. Black", "wiegen": "weigh",
+    "Noch keine Profile auf dieser Spule.": "No profiles on this spool yet.", "unbekannt": "unknown",
+    "Tag-Belegung: {size} / {cap} Bytes": "Tag usage: {size} / {cap} bytes", "zu groß": "too large",
+    // Meldungen
+    "Neue Spule angelegt. Werte ausfüllen, dann speichern.": "New spool created. Fill in the values, then save.",
+    "Demo-Spule geladen (ohne NFC).": "Demo spool loaded (no NFC).",
+    "Erst eine Spule lesen oder neu anlegen.": "Read or create a spool first.",
+    "Profil {code} von dieser Spule entfernen?": "Remove profile {code} from this spool?",
+    "Keine Spule geladen. Tag lesen oder 'Neue Spule'.": "No spool loaded. Read a tag or tap 'New spool'.",
+    "Bitte mindestens Hersteller und Material angeben.": "Please enter at least brand and material.",
+    "Spule {id} lokal gespeichert (Tag nicht verändert).": "Spool {id} saved locally (tag unchanged).",
+    "Zu groß für den Tag ({size}/{cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.": "Too large for the tag ({size}/{cap} bytes). Untick the plain-text line or remove profiles.",
+    "Lokal gespeichert. Web NFC hier nicht verfügbar ({size}/{cap} Bytes).": "Saved locally. Web NFC not available here ({size}/{cap} bytes).",
+    "Lokal gespeichert. Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)": "Saved locally. Now hold the phone to the tag… ({size}/{cap} bytes)",
+    "Auf Tag geschrieben und gespeichert ({size}/{cap} Bytes).": "Written to tag and saved ({size}/{cap} bytes).",
+    "Lokal gespeichert, aber NFC-Schreibfehler: {err}": "Saved locally, but NFC write error: {err}",
+    "Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig.": "Web NFC not available – requires Chrome on Android via https:// or localhost.",
+    "Scanner aktiv – Handy an die Spule halten…": "Scanner active – hold the phone to the spool…",
+    "Tag nicht lesbar – nochmal versuchen.": "Tag not readable – please try again.",
+    "NFC-Fehler: ": "NFC error: ",
+    "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden.": "Tag read, but no spool data (OpenSpool) found.",
+    "Leerer Tag – 'Neue Spule' anlegen und schreiben.": "Empty tag – create a 'New spool' and write it.",
+    "Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt.": "Foreign OpenSpool tag – a new ID was assigned and will be added when saving.",
+    "Ins Inventar übernommen.": "Added to inventory.",
+    "Spule {id} gelesen: {name}.": "Spool {id} read: {name}.", "noch nicht im Inventar": "not in inventory yet",
+    "Spule {id} aus dem Inventar geladen.": "Spool {id} loaded from inventory.",
+    "Profil \"{name}\" exportiert (Ordner Downloads).": "Profile \"{name}\" exported (Downloads folder).",
+    // Inventar
+    "Suche": "Search", "Alle": "All", "Hersteller, Farbe, ID…": "Brand, colour, ID…",
+    "Keine Spulen gefunden.": "No spools found.",
+    "{n} Spule(n), zusammen {g} g. Antippen zum Bearbeiten.": "{n} spool(s), {g} g in total. Tap to edit.",
+    "Rest": "Remaining", "keine Profile": "no profiles",
+    "Spule {id} aus dem Inventar löschen? (Der Tag bleibt unverändert.)": "Delete spool {id} from the inventory? (The tag stays unchanged.)",
+    // Verwaltung
+    "Vorschlagslisten für die Eingabefelder. Auf dem Tag steht immer der Klartext – diese Listen sind nur eine Eingabehilfe.": "Suggestion lists for the input fields. The tag always stores plain text – these lists are just an input aid.",
+    "Drucker": "Printers", "Farben": "Colours", "Materialien": "Materials",
+    "Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.": "The code is stored on the tag (keep it short). The firmware decides the pressure advance command in the PrusaSlicer export.",
+    "kein Farbwert – antippen zum Festlegen": "no colour value – tap to set",
+    "Neue Farbe: Farbwert wählen, Namen vergeben": "New colour: pick a value, give it a name",
+    "z.B. Galaxy Lila": "e.g. Galaxy Purple", "z.B. Extrudr": "e.g. Extrudr", "z.B. PETG HF": "e.g. PETG HF",
+    "Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.": "New brands, materials and colours are also added to the lists automatically when you save a spool with them.",
+    "Code nur aus Buchstaben/Ziffern.": "Code may only contain letters and digits.",
+    "Code {code} existiert schon. Überschreiben?": "Code {code} already exists. Overwrite?",
+    "{code} wird von {n} Spule(n) verwendet. Trotzdem löschen? (Profile auf den Spulen bleiben erhalten)": "{code} is used by {n} spool(s). Delete anyway? (Profiles on the spools are kept)",
+    "Drucker {code} löschen?": "Delete printer {code}?",
+    "Bitte einen Namen für die Farbe eingeben.": "Please enter a name for the colour.",
+    "Der Farbwert {hex} heißt schon \"{same}\". Trotzdem zusätzlich als \"{name}\" anlegen?": "Colour value {hex} is already called \"{same}\". Add it as \"{name}\" as well?",
+    "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
+    // Datensicherung
+    "Datensicherung": "Backup",
+    "Tägliche Sicherungsdatei in „Downloads“ (beim ersten Speichern des Tages)": "Daily backup file in “Downloads” (on the first save of the day)",
+    "Gelesene Tags automatisch ins Inventar übernehmen": "Add scanned tags to the inventory automatically",
+    "Jetzt Vollsicherung im Termux-Ordner anlegen": "Create full backup in the Termux folder now",
+    "Manuell sichern oder wiederherstellen (z.B. neues Handy):": "Back up or restore manually (e.g. new phone):",
+    "Backup exportieren": "Export backup", "Backup importieren": "Import backup",
+    "Daten dauerhaft gespeichert (Android löscht sie nicht bei Speichermangel).": "Data stored persistently (Android won't delete it when storage runs low).",
+    "Speicher nicht als dauerhaft markiert – App über „Installieren“ hinzufügen.": "Storage not marked as persistent – add the app via “Install”.",
+    "noch keine": "none yet",
+    "Letzte Sicherungsdatei: {d} · {n} Spule(n) im Inventar": "Last backup file: {d} · {n} spool(s) in inventory",
+    "Backup vom {date} mit {n} Spule(n) importieren? Aktuelle Daten werden ersetzt.": "Import backup from {date} with {n} spool(s)? Current data will be replaced.",
+    "Backup importiert.": "Backup imported.", "Import fehlgeschlagen: ": "Import failed: ",
+    "Keine gültige Backup-Datei": "Not a valid backup file",
+    "Vollsicherung gespeichert: ": "Full backup saved: ", "Sicherung fehlgeschlagen: ": "Backup failed: ",
+    "Auto-Backup aktiv · letzte Vollsicherung: {d}": "Auto backup active · last full backup: {d}",
+    "{n} Änderung(en) warten": "{n} change(s) pending", "alle Änderungen gesichert": "all changes saved",
+    "Termux-Server nicht erreichbar.": "Termux server not reachable.",
+    "{n} Änderung(en) werden nachgeholt, sobald er läuft.": "{n} change(s) will be sent once it is running.",
+    "Keine lokalen Daten, aber eine Sicherung mit {n} Spule(n) gefunden. Wiederherstellen?": "No local data, but a backup with {n} spool(s) was found. Restore?"
+  };
+  const LANG = (() => {
+    let l = 'auto';
+    try { l = localStorage.getItem('fnfc_lang') || 'auto'; } catch (e) {}
+    if (l === 'auto') l = (navigator.language || 'de').slice(0, 2).toLowerCase();
+    return (l === 'de' || I18N[l]) ? l : 'en';
+  })();
+  document.documentElement.lang = LANG;
+
+  function t(key, params) {
+    let s = (LANG !== 'de' && I18N[LANG] && I18N[LANG][key]) || key;
+    if (params) s = s.replace(/\{(\w+)\}/g, (m, k) => (params[k] ?? m));
+    return s;
+  }
+
+  // Übersetzt feste Texte im HTML (Textknoten, Platzhalter, Titel) – auch später
+  // per innerHTML eingefügte Elemente, über einen MutationObserver.
+  function translateNode(root) {
+    if (LANG === 'de') return;
+    const dict = I18N[LANG] || {};
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walk.nextNode()) nodes.push(walk.currentNode);
+    if (root.nodeType === 3) nodes.push(root);
+    for (const n of nodes) {
+      const raw = n.nodeValue, key = raw.trim();
+      if (key && dict[key]) n.nodeValue = raw.replace(key, dict[key]);
+    }
+    if (root.querySelectorAll) {
+      for (const el of [root, ...root.querySelectorAll('[placeholder],[title]')]) {
+        for (const a of ['placeholder', 'title']) {
+          const v = el.getAttribute && el.getAttribute(a);
+          if (v && dict[v]) el.setAttribute(a, dict[v]);
+        }
+      }
+    }
+  }
+  function setLang(l) { try { localStorage.setItem('fnfc_lang', l); } catch (e) {} location.reload(); }
+
   // ===================================================================
   // Stammdaten (nur Eingabehilfe) und Drucker
   // fw = Firmware-Familie, bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export
@@ -242,6 +392,7 @@
   }
   const utf8Len = s => new TextEncoder().encode(s).length;
 
+  if (LANG !== 'de') DEFAULT_SETTINGS.colors = { "Black": "#1A1A1A", "White": "#F5F5F5", "Grey": "#8A8A8A", "Red": "#C62828", "Blue": "#1565C0", "Green": "#2E7D32", "Yellow": "#F9D71C", "Orange": "#EF6C00", "Natural": "#E8E0C8" };
   let settings = loadJSON('fnfc_settings', null) || clone(DEFAULT_SETTINGS);
   for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
   // Vordefinierte Farben ohne gültigen Farbwert mit dem Standardwert ergänzen
@@ -398,7 +549,7 @@
     cur.ew = 250; cur.r = 1000; cur.tmin = 200; cur.tmax = 230; cur.bed = 60;
     $('numScaleWt').value = "";
     renderForm();
-    updateLog("Neue Spule angelegt. Werte ausfüllen, dann speichern.");
+    updateLog(t("Neue Spule angelegt. Werte ausfüllen, dann speichern."));
   }
 
   function loadDemoTag() {
@@ -411,7 +562,7 @@
     });
     $('numScaleWt').value = "";
     renderForm();
-    updateLog("Demo-Spule geladen (ohne NFC).");
+    updateLog(t("Demo-Spule geladen (ohne NFC)."));
   }
 
   function renderForm() {
@@ -457,7 +608,7 @@
     const withSum = $('chkSummary').checked;
     const size = ndefSize(json, withSum ? summaryText(cur) : null);
     const cap = parseInt($('tagType').value);
-    $('sizeInfo').textContent = `Tag-Belegung: ${size} / ${cap} Bytes` + (size > cap ? '  ⚠ zu groß' : '');
+    $('sizeInfo').textContent = t('Tag-Belegung: {size} / {cap} Bytes', { size, cap }) + (size > cap ? '  ⚠ ' + t('zu groß') : '');
     $('sizeInfo').style.color = size > cap ? 'var(--danger)' : 'var(--muted)';
   }
 
@@ -469,7 +620,7 @@
   }
 
   function addPrinterProfile() {
-    if (!cur.id) { updateLog("Erst eine Spule lesen oder neu anlegen.", true); return; }
+    if (!cur.id) { updateLog(t("Erst eine Spule lesen oder neu anlegen."), true); return; }
     const code = $('selAddPrinter').value;
     if (!code) return;
     const p = clone(DEFAULT_PROFILE);
@@ -481,7 +632,7 @@
   }
 
   function removePrinterProfile(code) {
-    if (!confirm(`Profil ${code} von dieser Spule entfernen?`)) return;
+    if (!confirm(t('Profil {code} von dieser Spule entfernen?', { code }))) return;
     delete cur.cfg[code];
     updateAddPrinterDropdown();
     renderPrinterCards();
@@ -497,10 +648,10 @@
 
   function renderPrinterCards() {
     const codes = Object.keys(cur.cfg);
-    if (!codes.length) { $('printerProfilesContainer').innerHTML = "<p class='hint'>Noch keine Profile auf dieser Spule.</p>"; return; }
+    if (!codes.length) { $('printerProfilesContainer').innerHTML = `<p class='hint'>${t('Noch keine Profile auf dieser Spule.')}</p>`; return; }
     $('printerProfilesContainer').innerHTML = codes.map(code => {
       const p = cur.cfg[code], c = esc(code);
-      const name = settings.printers[code] ? settings.printers[code].name : code + ' (unbekannt)';
+      const name = settings.printers[code] ? settings.printers[code].name : code + ' (' + t('unbekannt') + ')';
       return `
         <div class="printer-profile">
           <div class="printer-header">
@@ -513,10 +664,10 @@
           </div>
           <div class="grid-4">
             ${PROFILE_FIELDS.map(([k, label, step]) => `
-              <div><label>${label}</label><input type="number" inputmode="decimal" step="${step}" value="${esc(p[k] ?? '')}"
+              <div><label>${t(label)}</label><input type="number" inputmode="decimal" step="${step}" value="${esc(p[k] ?? '')}"
                 oninput="setProfileValue('${c}','${k}',this.value)"></div>`).join('')}
           </div>
-          <p class="hint" style="margin:0; font-size:11px;">Bett leer = globaler Wert. PA = Pressure/Linear Advance.</p>
+          <p class="hint" style="margin:0; font-size:11px;">${t('Bett leer = globaler Wert. PA = Pressure/Linear Advance.')}</p>
         </div>`;
     }).join('');
   }
@@ -544,16 +695,16 @@
   }
 
   function validate() {
-    if (!cur.id) { updateLog("Keine Spule geladen. Tag lesen oder 'Neue Spule'.", true); return false; }
+    if (!cur.id) { updateLog(t("Keine Spule geladen. Tag lesen oder 'Neue Spule'."), true); return false; }
     collectForm();
-    if (!cur.brand || !cur.material) { updateLog("Bitte mindestens Hersteller und Material angeben.", true); return false; }
+    if (!cur.brand || !cur.material) { updateLog(t("Bitte mindestens Hersteller und Material angeben."), true); return false; }
     return true;
   }
 
   function saveLocalOnly() {
     if (!validate()) return;
     storeLocal();
-    updateLog(`Spule ${cur.id} lokal gespeichert (Tag nicht verändert).`);
+    updateLog(t('Spule {id} lokal gespeichert (Tag nicht verändert).', { id: cur.id }));
   }
 
   async function saveToTag() {
@@ -563,20 +714,20 @@
     const size = ndefSize(json, text);
     const cap = parseInt($('tagType').value);
     if (size > cap) {
-      updateLog(`Zu groß für den Tag (${size}/${cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.`, true);
+      updateLog(t('Zu groß für den Tag ({size}/{cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.', { size, cap }), true);
       return;
     }
     storeLocal();
-    if (!("NDEFReader" in window)) { updateLog(`Lokal gespeichert. Web NFC hier nicht verfügbar (${size}/${cap} Bytes).`); return; }
+    if (!("NDEFReader" in window)) { updateLog(t('Lokal gespeichert. Web NFC hier nicht verfügbar ({size}/{cap} Bytes).', { size, cap })); return; }
 
     const records = [{ recordType: "mime", mediaType: "application/json", data: new TextEncoder().encode(json) }];
     if (text) records.push({ recordType: "text", lang: "en", data: text });
-    updateLog(`Lokal gespeichert. Jetzt Handy an den Tag halten… (${size}/${cap} Bytes)`);
+    updateLog(t('Lokal gespeichert. Jetzt Handy an den Tag halten… ({size}/{cap} Bytes)', { size, cap }));
     try {
       await (nfcReader || new NDEFReader()).write({ records });
-      updateLog(`✔ Auf Tag geschrieben und gespeichert (${size}/${cap} Bytes).`);
+      updateLog('✔ ' + t('Auf Tag geschrieben und gespeichert ({size}/{cap} Bytes).', { size, cap }));
     } catch (err) {
-      updateLog(`Lokal gespeichert, aber NFC-Schreibfehler: ${err.message || err}`, true);
+      updateLog(t('Lokal gespeichert, aber NFC-Schreibfehler: {err}', { err: err.message || err }), true);
     }
   }
 
@@ -584,17 +735,17 @@
   let nfcReader = null;
 
   async function readNFC() {
-    if (!("NDEFReader" in window)) { updateLog("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig.", true); return; }
-    if (nfcReader) { updateLog("Scanner aktiv – Handy an die Spule halten…"); return; }
+    if (!("NDEFReader" in window)) { updateLog(t("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig."), true); return; }
+    if (nfcReader) { updateLog(t("Scanner aktiv – Handy an die Spule halten…")); return; }
     try {
       nfcReader = new NDEFReader();
       await nfcReader.scan();
-      updateLog("Scanner aktiv – Handy an die Spule halten…");
-      nfcReader.onreadingerror = () => updateLog("Tag nicht lesbar – nochmal versuchen.", true);
+      updateLog(t("Scanner aktiv – Handy an die Spule halten…"));
+      nfcReader.onreadingerror = () => updateLog(t("Tag nicht lesbar – nochmal versuchen."), true);
       nfcReader.onreading = ev => handleTag(ev.message.records);
     } catch (err) {
       nfcReader = null;
-      updateLog("NFC-Fehler: " + (err.message || err), true);
+      updateLog(t("NFC-Fehler: ") + (err.message || err), true);
     }
   }
 
@@ -609,14 +760,14 @@
         if (o && (o.protocol === "openspool" || o.cfg)) { data = o; break; }
       } catch (e) { /* kein JSON – nächsten Record probieren */ }
     }
-    if (!data) { updateLog(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben.", true); return; }
+    if (!data) { updateLog(t(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben."), true); return; }
 
     cur = fromTagJSON(data);
     // Bekannte Spule: Farbname aus dem Inventar übernehmen, falls der Farbwert nicht in der Farbliste steht
     const inv = spools.find(s => s.id === cur.id);
     if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
     let note = "";
-    if (!cur.id) { cur.id = generateID(); note = " Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."; }
+    if (!cur.id) { cur.id = generateID(); note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
     $('numScaleWt').value = "";
     renderForm();
     switchTab('scanner', document.querySelector('.tab-btn'));
@@ -626,9 +777,9 @@
     if (!known && opts.autoAdd && !note) {
       const entry = clone(cur); entry.updated = new Date().toISOString();
       spools.push(entry); saveSpools(); journal({ op: 'spool', data: entry });
-      known = true; note = " Ins Inventar übernommen.";
+      known = true; note = " " + t("Ins Inventar übernommen.");
     }
-    updateLog(`Spule ${cur.id} gelesen: ${cur.brand} ${cur.material}.` + (known ? "" : " (noch nicht im Inventar)") + note);
+    updateLog(t("Spule {id} gelesen: {name}.", { id: cur.id, name: cur.brand + " " + cur.material }) + (known ? "" : " (" + t("noch nicht im Inventar") + ")") + note);
   }
 
   // ---------------- Inventar ----------------
@@ -636,7 +787,7 @@
     const sel = $('invFilter');
     const old = sel.value || 'all';
     const mats = [...new Set(spools.map(s => s.material).filter(Boolean))].sort();
-    sel.innerHTML = '<option value="all">Alle</option>' + mats.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+    sel.innerHTML = `<option value="all">${t('Alle')}</option>` + mats.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
     sel.value = mats.includes(old) ? old : 'all';
 
     const q = $('invSearch').value.trim().toLowerCase();
@@ -645,17 +796,17 @@
       .filter(({ s }) => !q || [s.id, s.brand, s.material, s.cn].join(' ').toLowerCase().includes(q))
       .sort((a, b) => (a.s.brand + a.s.material).localeCompare(b.s.brand + b.s.material));
 
-    if (!list.length) { $('inventoryList').innerHTML = "<p class='hint'>Keine Spulen gefunden.</p>"; return; }
+    if (!list.length) { $('inventoryList').innerHTML = `<p class='hint'>${t('Keine Spulen gefunden.')}</p>`; return; }
     const total = list.reduce((sum, { s }) => sum + num(s.r), 0);
     $('inventoryList').innerHTML =
-      `<p class="hint">${list.length} Spule(n), zusammen ${Math.round(total)} g. Antippen zum Bearbeiten.</p>` +
+      `<p class="hint">${t('{n} Spule(n), zusammen {g} g. Antippen zum Bearbeiten.', { n: list.length, g: Math.round(total) })}</p>` +
       list.map(({ s, i }) => `
         <div class="card inventory-item">
           <div class="row" style="cursor:pointer; flex:1;" onclick="loadFromInventory(${i})">
             <span class="swatch" style="background:${esc(s.hex)}"></span>
             <div>
               <strong>${esc(s.brand)} ${esc(s.material)}${s.cn ? ' – ' + esc(s.cn) : ''}</strong>${s.abr ? ' ⚠' : ''}<br>
-              <span class="hint" style="font-size:12px;">ID ${esc(s.id)} · Rest ${esc(s.r)} g · ${esc(Object.keys(s.cfg || {}).join(', ') || 'keine Profile')}</span>
+              <span class="hint" style="font-size:12px;">ID ${esc(s.id)} · ${t('Rest')} ${esc(s.r)} g · ${esc(Object.keys(s.cfg || {}).join(', ') || t('keine Profile'))}</span>
             </div>
           </div>
           <button class="btn-danger btn-small" onclick="deleteSpool(${i})">✕</button>
@@ -669,11 +820,11 @@
     $('numScaleWt').value = "";
     renderForm();
     switchTab('scanner', document.querySelector('.tab-btn'));
-    updateLog(`Spule ${cur.id} aus dem Inventar geladen.`);
+    updateLog(t('Spule {id} aus dem Inventar geladen.', { id: cur.id }));
   }
 
   function deleteSpool(i) {
-    if (!confirm(`Spule ${spools[i].id} aus dem Inventar löschen? (Der Tag bleibt unverändert.)`)) return;
+    if (!confirm(t('Spule {id} aus dem Inventar löschen? (Der Tag bleibt unverändert.)', { id: spools[i].id }))) return;
     const id = spools[i].id;
     spools.splice(i, 1);
     saveSpools();
@@ -744,7 +895,7 @@
       };
       download(`${safe}.json`, JSON.stringify(o, null, 4), 'application/json');
     }
-    updateLog(`Profil "${name}" exportiert (Ordner Downloads).`);
+    updateLog(t('Profil "{name}" exportiert (Ordner Downloads).', { name }));
   }
 
   function download(filename, content, mime) {
@@ -766,7 +917,7 @@
     let html = '';
     html += `
       <div class="card">
-        <h4>Drucker</h4>
+        <h4>${t('Drucker')}</h4>
         ${Object.entries(settings.printers).map(([code, p]) => `
           <div class="list-row">
             <span><b>${esc(code)}</b> ${esc(p.name)}<br><span class="hint" style="font-size:12px;">${esc(FW_LABELS[p.fw] || p.fw)}</span></span>
@@ -780,13 +931,13 @@
           </select>
           <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addPrinter()">+</button>
         </div>
-        <p class="hint" style="margin-bottom:0;">Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.</p>
+        <p class="hint" style="margin-bottom:0;">${t('Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.')}</p>
       </div>`;
 
     // Farben: Farbwert direkt antippen zum Ändern, unten neue Farbe anlegen
     html += `
       <div class="card">
-        <h4>Farben</h4>
+        <h4>${t('Farben')}</h4>
         ${Object.entries(settings.colors).map(([n, h]) => {
           const ok = isHex(h);
           return `
@@ -794,31 +945,31 @@
             <span class="row" style="flex:1;">
               <input type="color" value="${ok ? esc(h) : '#808080'}" style="width:44px; height:34px; margin:0;"
                 onchange="setColorHex('${esc(n)}', this.value)">
-              <span>${esc(n)}<br><span class="hint" style="font-size:12px; ${ok ? '' : 'color:var(--danger)'}">${ok ? esc(h.toUpperCase()) : 'kein Farbwert – antippen zum Festlegen'}</span></span>
+              <span>${esc(n)}<br><span class="hint" style="font-size:12px; ${ok ? '' : 'color:var(--danger)'}">${ok ? esc(h.toUpperCase()) : t('kein Farbwert – antippen zum Festlegen')}</span></span>
             </span>
             <button class="btn-danger btn-small" onclick="deleteListItem('colors','${esc(n)}')">✕</button>
           </div>`;
         }).join('')}
-        <label style="margin-top:10px;">Neue Farbe: Farbwert wählen, Namen vergeben</label>
+        <label style="margin-top:10px;">${t('Neue Farbe: Farbwert wählen, Namen vergeben')}</label>
         <div class="row">
           <input type="color" id="addColHex" value="#808080" style="width:56px; height:42px; margin:0;">
-          <input type="text" id="addColName" placeholder="z.B. Galaxy Lila" style="flex:1; margin:0;">
+          <input type="text" id="addColName" placeholder="${t('z.B. Galaxy Lila')}" style="flex:1; margin:0;">
           <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addColor()">+</button>
         </div>
       </div>`;
     const simpleCard = (key, title, ph) => `
       <div class="card">
-        <h4>${title}</h4>
+        <h4>${t(title)}</h4>
         ${settings[key].map(v => `
           <div class="list-row"><span>${esc(v)}</span><button class="btn-danger btn-small" onclick="deleteListItem('${key}','${esc(v)}')">✕</button></div>`).join('')}
         <div class="row" style="margin-top:10px;">
-          <input type="text" id="add_${key}" placeholder="${ph}" style="flex:1; margin:0;">
+          <input type="text" id="add_${key}" placeholder="${t(ph)}" style="flex:1; margin:0;">
           <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('${key}')">+</button>
         </div>
       </div>`;
     html += simpleCard('vendors', 'Hersteller', 'z.B. Extrudr');
     html += simpleCard('materials', 'Materialien', 'z.B. PETG HF');
-    html += `<p class="hint">Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.</p>`;
+    html += `<p class="hint">${t('Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.')}</p>`;
     $('settingsSections').innerHTML = html;
   }
 
@@ -826,15 +977,15 @@
     const code = $('addPrCode').value.trim().toUpperCase();
     const name = $('addPrName').value.trim();
     if (!code || !name) return;
-    if (!/^[A-Z0-9]+$/.test(code)) { alert("Code nur aus Buchstaben/Ziffern."); return; }
-    if (settings.printers[code] && !confirm(`Code ${code} existiert schon. Überschreiben?`)) return;
+    if (!/^[A-Z0-9]+$/.test(code)) { alert(t("Code nur aus Buchstaben/Ziffern.")); return; }
+    if (settings.printers[code] && !confirm(t('Code {code} existiert schon. Überschreiben?', { code }))) return;
     settings.printers[code] = { name, fw: $('addPrFw').value };
     saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
   }
 
   function deletePrinter(code) {
     const used = spools.filter(s => s.cfg && s.cfg[code]).length;
-    if (!confirm(used ? `${code} wird von ${used} Spule(n) verwendet. Trotzdem löschen? (Profile auf den Spulen bleiben erhalten)` : `Drucker ${code} löschen?`)) return;
+    if (!confirm(used ? t('{code} wird von {n} Spule(n) verwendet. Trotzdem löschen? (Profile auf den Spulen bleiben erhalten)', { code, n: used }) : t('Drucker {code} löschen?', { code }))) return;
     delete settings.printers[code];
     saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
   }
@@ -849,10 +1000,10 @@
   function addColor() {
     const name = $('addColName').value.trim();
     const hex = $('addColHex').value.toUpperCase();
-    if (!name) { alert("Bitte einen Namen für die Farbe eingeben."); return; }
+    if (!name) { alert(t("Bitte einen Namen für die Farbe eingeben.")); return; }
     const same = colorNameForHex(hex);
-    if (same && same !== name && !confirm(`Der Farbwert ${hex} heißt schon "${same}". Trotzdem zusätzlich als "${name}" anlegen?`)) return;
-    if (settings.colors[name] && !confirm(`"${name}" existiert schon (${settings.colors[name]}). Farbwert überschreiben?`)) return;
+    if (same && same !== name && !confirm(t('Der Farbwert {hex} heißt schon "{same}". Trotzdem zusätzlich als "{name}" anlegen?', { hex, same, name }))) return;
+    if (settings.colors[name] && !confirm(t('"{name}" existiert schon ({hex}). Farbwert überschreiben?', { name, hex: settings.colors[name] }))) return;
     settings.colors[name] = hex;
     saveSettings(); refreshLists(); renderSettings();
   }
@@ -889,15 +1040,15 @@
     if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!data.settings || !Array.isArray(data.spools)) throw new Error("Keine gültige Backup-Datei");
-      if (!confirm(`Backup vom ${data.exported || '?'} mit ${data.spools.length} Spule(n) importieren? Aktuelle Daten werden ersetzt.`)) return;
+      if (!data.settings || !Array.isArray(data.spools)) throw new Error(t("Keine gültige Backup-Datei"));
+      if (!confirm(t('Backup vom {date} mit {n} Spule(n) importieren? Aktuelle Daten werden ersetzt.', { date: data.exported || '?', n: data.spools.length }))) return;
       settings = data.settings;
       for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
       spools = data.spools;
       saveSettings(); saveSpools(); initApp();
       sendSnapshot(true);
-      alert("Backup importiert.");
-    } catch (e) { alert("Import fehlgeschlagen: " + e.message); }
+      alert(t("Backup importiert."));
+    } catch (e) { alert(t("Import fehlgeschlagen: ") + e.message); }
     finally { $('importFile').value = ""; }
   }
 
@@ -914,6 +1065,7 @@
   let pending = loadJSON('fnfc_pending', []);
 
   function journal(entry) {
+    if (!localStorage.getItem('fnfc_serverSeen')) return;   // kein Termux im Einsatz -> nichts sammeln
     entry.ts = new Date().toISOString();
     pending.push(entry);
     localStorage.setItem('fnfc_pending', JSON.stringify(pending));
@@ -940,8 +1092,8 @@
       const res = await r.json();
       localStorage.setItem('fnfc_lastSnapshot', data.exported.slice(0, 10));
       showBackupStatus();
-      if (manual) alert('Vollsicherung gespeichert: backups/' + res.file);
-    } catch (e) { if (manual) alert('Sicherung fehlgeschlagen: ' + e.message); }
+      if (manual) alert(t('Vollsicherung gespeichert: ') + 'backups/' + res.file);
+    } catch (e) { if (manual) alert(t('Sicherung fehlgeschlagen: ') + e.message); }
   }
 
   function showBackupStatus() {
@@ -951,12 +1103,12 @@
     el.style.display = (backupServer || pending.length) ? '' : 'none';
     const last = localStorage.getItem('fnfc_lastSnapshot') || '–';
     if (backupServer) {
-      el.innerHTML = `✔ Auto-Backup aktiv · letzte Vollsicherung: ${esc(last)}` +
-        (pending.length ? ` · <span style="color:#ffc107">${pending.length} Änderung(en) warten</span>` : ' · alle Änderungen gesichert');
+      el.innerHTML = '✔ ' + t('Auto-Backup aktiv · letzte Vollsicherung: {d}', { d: esc(last) }) +
+        (pending.length ? ` · <span style="color:#ffc107">${t('{n} Änderung(en) warten', { n: pending.length })}</span>` : ' · ' + t('alle Änderungen gesichert'));
       $('btnSnapshot').style.display = '';
     } else {
-      el.innerHTML = `Termux-Server nicht erreichbar.` +
-        (pending.length ? ` ${pending.length} Änderung(en) werden nachgeholt, sobald er läuft.` : '');
+      el.innerHTML = t('Termux-Server nicht erreichbar.') +
+        (pending.length ? ' ' + t('{n} Änderung(en) werden nachgeholt, sobald er läuft.', { n: pending.length }) : '');
       $('btnSnapshot').style.display = 'none';
     }
   }
@@ -966,6 +1118,8 @@
       const r = await fetch('/api/ping', { cache: 'no-store' });
       backupServer = r.ok && (await r.json()).ok === true;
     } catch (e) { backupServer = false; }
+    if (backupServer) localStorage.setItem('fnfc_serverSeen', '1');
+    else if (!localStorage.getItem('fnfc_serverSeen') && pending.length) { pending = []; localStorage.removeItem('fnfc_pending'); }
     showBackupStatus();
     if (!backupServer) return;
 
@@ -974,7 +1128,7 @@
       try {
         const state = await (await fetch('/api/state', { cache: 'no-store' })).json();
         if (state.spools && state.spools.length &&
-            confirm(`Keine lokalen Daten, aber eine Sicherung mit ${state.spools.length} Spule(n) gefunden. Wiederherstellen?`)) {
+            confirm(t('Keine lokalen Daten, aber eine Sicherung mit {n} Spule(n) gefunden. Wiederherstellen?', { n: state.spools.length }))) {
           if (state.settings) settings = state.settings;
           for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
           spools = state.spools;
@@ -1011,11 +1165,11 @@
   async function showStorageStatus() {
     $('optDailyFile').checked = !!opts.dailyFile;
     $('optAutoAdd').checked = !!opts.autoAdd;
-    const last = localStorage.getItem('fnfc_lastFile') || 'noch keine';
+    const last = localStorage.getItem('fnfc_lastFile') || t('noch keine');
     $('storageStatus').innerHTML =
-      (persisted ? '✔ Daten dauerhaft gespeichert (Android löscht sie nicht bei Speichermangel).'
-                 : '⚠ Speicher nicht als dauerhaft markiert – App über „Installieren“ hinzufügen.') +
-      `<br>Letzte Sicherungsdatei: ${esc(last)} · ${spools.length} Spule(n) im Inventar`;
+      (persisted ? '✔ ' + t('Daten dauerhaft gespeichert (Android löscht sie nicht bei Speichermangel).')
+                 : '⚠ ' + t('Speicher nicht als dauerhaft markiert – App über „Installieren“ hinzufügen.')) +
+      '<br>' + t('Letzte Sicherungsdatei: {d} · {n} Spule(n) im Inventar', { d: esc(last), n: spools.length });
   }
 
   async function initStorage() {
@@ -1030,6 +1184,117 @@
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+
+  const HELP = {
+    de: `
+      <div class="card"><h4>Filament NFC – Kurzanleitung</h4>
+        <p class="hint">Jede Spule bekommt einen NFC-Tag (NTAG215). Darauf stehen Hersteller, Material, Farbe, Temperaturen, Restgewicht und deine Einstellungen für bis zu fünf Drucker. Wer den Tag mit dem Handy liest, sieht diese Daten – auch ohne diese App.</p></div>
+      <details class="card" open><summary>1. Einrichten (einmalig)</summary>
+        <ol>
+          <li><b>Verwaltung → Drucker:</b> Lege deine Drucker an. Der <b>Code</b> (max. 4 Zeichen, z.B. <code>PCO</code>) steht später auf dem Tag. Die <b>Firmware</b> bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.</li>
+          <li><b>Farben, Hersteller, Materialien</b> sind nur Vorschläge für die Eingabe. Neue Einträge entstehen auch automatisch beim Speichern einer Spule.</li>
+          <li>NFC am Handy einschalten (Einstellungen → Verbindungen → NFC).</li>
+        </ol></details>
+      <details class="card"><summary>2. Neue Spule anlegen und beschreiben</summary>
+        <ol>
+          <li><b>Spule → Neue Spule</b> tippen. Die App vergibt eine 4-stellige ID.</li>
+          <li>Hersteller, Material (z.B. „PLA CF“ = Typ PLA, Variante CF), Farbe und Temperaturbereich eintragen.</li>
+          <li>Unter <b>Druckerprofile</b> für jeden Drucker ein Profil hinzufügen und die kalibrierten Werte eintragen.</li>
+          <li><b>Speichern &amp; auf NFC schreiben</b> tippen, dann das Handy an den Tag halten (Mitte der Rückseite), bis „✔ Auf Tag geschrieben“ erscheint.</li>
+        </ol>
+        <p class="hint">Die Anzeige „Tag-Belegung“ zeigt, wie voll der Tag wird. Ist er zu voll, verhindert die App das Schreiben.</p></details>
+      <details class="card"><summary>3. Spule lesen</summary>
+        <p><b>NFC-Tag lesen</b> tippen und Handy an die Spule halten. Der Scanner bleibt aktiv, du kannst nacheinander mehrere Spulen lesen. Unbekannte Spulen landen automatisch im Inventar (abschaltbar in der Verwaltung). Auch fremde OpenSpool-Tags werden erkannt.</p></details>
+      <details class="card"><summary>4. Restgewicht aktualisieren</summary>
+        <ol><li>Spule lesen.</li><li>Spule auf die Küchenwaage legen und den Wert bei <b>Waage brutto</b> eintragen – das Netto wird mit dem Leergewicht berechnet.</li><li>Speichern &amp; auf NFC schreiben.</li></ol></details>
+      <details class="card"><summary>5. Profil für den Slicer exportieren</summary>
+        <p>In jeder Druckerkarte gibt es die Buttons <b>PrusaSlicer</b> und <b>Orca</b>. Die Datei landet in „Downloads“.</p>
+        <ul>
+          <li><b>PrusaSlicer:</b> Datei → Importieren → Konfigurations-Bundle importieren. Es entsteht ein eigenes Filament-Profil.</li>
+          <li><b>OrcaSlicer:</b> Datei → Importieren → Konfigurationen importieren.</li>
+        </ul>
+        <p class="hint">Exportiert werden Temperatur, Bett, Flow, Pressure Advance, Max. Volumenstrom und Retract. Kühlung usw. bekommen Standardwerte – nach dem ersten Import prüfen.</p></details>
+      <details class="card"><summary>6. Was steht auf dem Tag?</summary>
+        <p>Ein JSON-Datensatz im offenen <b>OpenSpool</b>-Format (brand, type, color_hex, min_temp …), den auch andere Apps und Drucker lesen, plus deine Zusatzdaten. Jedes Druckerprofil ist eine kurze, lesbare Zeile:</p>
+        <p><code>"PCO":"T215 B55 F0.98 PA0.04 MF15 R0.8/35"</code></p>
+        <ul class="hint">
+          <li><b>T</b> Düse °C · <b>B</b> Bett °C (fehlt = Spulenwert) · <b>F</b> Flow</li>
+          <li><b>PA</b> Pressure Advance · <b>MF</b> max. Volumenstrom mm³/s</li>
+          <li><b>R</b> Retract Länge mm / Geschwindigkeit mm/s</li>
+        </ul>
+        <p class="hint">NTAG215 reicht für 5 Druckerprofile, NTAG216 für deutlich mehr.</p></details>
+      <details class="card"><summary>7. Datensicherung</summary>
+        <ul>
+          <li>Die Daten liegen in der App auf dem Handy.</li>
+          <li>Beim ersten Speichern eines Tages legt die App eine Sicherungsdatei in „Downloads“ ab.</li>
+          <li>Wiederherstellen: <b>Verwaltung → Backup importieren</b> – oder einfach alle Spulen abscannen, denn alle wichtigen Daten stehen auf den Tags.</li>
+        </ul></details>
+      <details class="card"><summary>8. Probleme?</summary>
+        <ul>
+          <li><b>„Web NFC nicht verfügbar“:</b> Nur Chrome auf Android kann NFC im Browser. App über das installierte Icon starten.</li>
+          <li><b>Tag wird nicht erkannt:</b> NFC eingeschaltet? Handy langsam über die Rückseite bewegen, Hülle mit Metall entfernen.</li>
+          <li><b>Schreibfehler:</b> Tag eventuell schreibgeschützt oder zu klein (NTAG213).</li>
+          <li><b>Neue Version:</b> Die App aktualisiert sich beim Start mit Internet von selbst; ggf. zweimal öffnen.</li>
+        </ul></details>`,
+    en: `
+      <div class="card"><h4>Filament NFC – Quick guide</h4>
+        <p class="hint">Each spool gets an NFC tag (NTAG215). It stores brand, material, colour, temperatures, remaining weight and your settings for up to five printers. Anyone reading the tag with a phone sees this data – even without this app.</p></div>
+      <details class="card" open><summary>1. Setup (once)</summary>
+        <ol>
+          <li><b>Settings → Printers:</b> add your printers. The <b>code</b> (max. 4 characters, e.g. <code>PCO</code>) is stored on the tag. The <b>firmware</b> decides the pressure advance command in the PrusaSlicer export.</li>
+          <li><b>Colours, brands, materials</b> are only suggestions for input. New entries are also added automatically when you save a spool.</li>
+          <li>Turn on NFC on your phone (Settings → Connections → NFC).</li>
+        </ol></details>
+      <details class="card"><summary>2. Create and write a new spool</summary>
+        <ol>
+          <li>Tap <b>Spool → New spool</b>. The app assigns a 4-character ID.</li>
+          <li>Enter brand, material (e.g. “PLA CF” = type PLA, variant CF), colour and temperature range.</li>
+          <li>Under <b>Printer profiles</b>, add a profile for each printer and enter your calibrated values.</li>
+          <li>Tap <b>Save &amp; write to NFC</b>, then hold the phone to the tag (middle of the back) until “✔ Written to tag” appears.</li>
+        </ol>
+        <p class="hint">“Tag usage” shows how full the tag gets. If it is too full, the app won't write.</p></details>
+      <details class="card"><summary>3. Read a spool</summary>
+        <p>Tap <b>Read NFC tag</b> and hold the phone to the spool. The scanner stays active, so you can read several spools in a row. Unknown spools are added to the inventory automatically (can be turned off in Settings). Foreign OpenSpool tags are recognised too.</p></details>
+      <details class="card"><summary>4. Update remaining weight</summary>
+        <ol><li>Read the spool.</li><li>Put it on a kitchen scale and enter the value under <b>Scale gross</b> – net weight is calculated from the empty spool weight.</li><li>Save &amp; write to NFC.</li></ol></details>
+      <details class="card"><summary>5. Export a slicer profile</summary>
+        <p>Each printer card has <b>PrusaSlicer</b> and <b>Orca</b> buttons. The file is saved to “Downloads”.</p>
+        <ul>
+          <li><b>PrusaSlicer:</b> File → Import → Import Config Bundle. A separate filament profile is created.</li>
+          <li><b>OrcaSlicer:</b> File → Import → Import Configs.</li>
+        </ul>
+        <p class="hint">Exported: temperature, bed, flow, pressure advance, max volumetric speed and retraction. Cooling etc. get default values – check after the first import.</p></details>
+      <details class="card"><summary>6. What is stored on the tag?</summary>
+        <p>A JSON record in the open <b>OpenSpool</b> format (brand, type, color_hex, min_temp …) that other apps and printers can read, plus your extra data. Each printer profile is one short, readable line:</p>
+        <p><code>"PCO":"T215 B55 F0.98 PA0.04 MF15 R0.8/35"</code></p>
+        <ul class="hint">
+          <li><b>T</b> nozzle °C · <b>B</b> bed °C (missing = spool value) · <b>F</b> flow</li>
+          <li><b>PA</b> pressure advance · <b>MF</b> max volumetric speed mm³/s</li>
+          <li><b>R</b> retraction length mm / speed mm/s</li>
+        </ul>
+        <p class="hint">NTAG215 fits 5 printer profiles, NTAG216 many more.</p></details>
+      <details class="card"><summary>7. Backup</summary>
+        <ul>
+          <li>Data is stored inside the app on your phone.</li>
+          <li>On the first save of each day, the app puts a backup file into “Downloads”.</li>
+          <li>Restore: <b>Settings → Import backup</b> – or simply scan all spools, as all important data is on the tags.</li>
+        </ul></details>
+      <details class="card"><summary>8. Problems?</summary>
+        <ul>
+          <li><b>“Web NFC not available”:</b> only Chrome on Android supports NFC in the browser. Start the app via the installed icon.</li>
+          <li><b>Tag not detected:</b> is NFC on? Move the phone slowly across the back, remove cases with metal.</li>
+          <li><b>Write error:</b> the tag may be write-protected or too small (NTAG213).</li>
+          <li><b>New version:</b> the app updates itself when started with internet; open it twice if needed.</li>
+        </ul></details>`
+  };
+  function renderHelp() { $('helpContent').innerHTML = HELP[LANG] || HELP.en; }
+
+  translateNode(document.body);
+  if (LANG !== 'de') new MutationObserver(muts => {
+    for (const m of muts) for (const n of m.addedNodes) translateNode(n);
+  }).observe(document.body, { childList: true, subtree: true });
+  try { $('selLang').value = localStorage.getItem('fnfc_lang') || 'auto'; } catch (e) {}
+  renderHelp();
 
   initApp();
   initStorage();
