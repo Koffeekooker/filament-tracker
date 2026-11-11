@@ -127,7 +127,7 @@
     <div class="card" style="border-left: 3px solid var(--primary);">
       <h4>Filament</h4>
       <label>Hersteller</label>
-      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo()">
+      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo(); applyEWSuggestion()">
       <label>Material (Typ + Variante, z.B. "PLA CF")</label>
       <input type="text" id="inMaterial" list="dlMaterials" placeholder="z.B. PLA CF" oninput="updateSizeInfo()">
       <label>Farbe (Name + Farbwert)</label>
@@ -144,7 +144,15 @@
         <div><label>Bett °C</label><input type="number" id="numBed" inputmode="numeric"></div>
       </div>
       <div class="grid-3">
-        <div><label>Leergewicht g</label><input type="number" id="numEmptyWt" inputmode="numeric" oninput="calcNetWeight()"></div>
+        <div><label>Spulengröße</label>
+          <select id="selSize" onchange="applyEWSuggestion()">
+            <option value="250">0,25 kg</option><option value="500">0,5 kg</option><option value="750">0,75 kg</option>
+            <option value="1000">1 kg</option><option value="2000">2 kg</option><option value="3000">3 kg</option>
+          </select></div>
+        <div style="grid-column: span 2;"><p id="ewHint" class="hint" style="margin:22px 0 0; font-size:12px;"></p></div>
+      </div>
+      <div class="grid-3">
+        <div><label>Leergewicht g</label><input type="number" id="numEmptyWt" inputmode="numeric" oninput="this.dataset.auto='0'; calcNetWeight(); applyEWSuggestion()"></div>
         <div><label>Waage brutto g</label><input type="number" id="numScaleWt" inputmode="numeric" oninput="calcNetWeight()" placeholder="wiegen"></div>
         <div><label>Rest netto g</label><input type="number" id="numNetWt" inputmode="numeric" style="color:#00ff66;"></div>
       </div>
@@ -241,7 +249,7 @@
     // Spule
     "Tag-Typ": "Tag type", "NTAG213 (144 Bytes – zu klein)": "NTAG213 (144 bytes – too small)",
     "Spulen-ID": "Spool ID", "NFC-Tag lesen": "Read NFC tag", "Neue Spule": "New spool", "Demo laden": "Load demo",
-    "Bereit.": "Ready.", "Hersteller": "Brand",
+    "Bereit.": "Ready.", "Hersteller": "Brand", "Brands": "Brands",
     "Material (Typ + Variante, z.B. \"PLA CF\")": "Material (type + variant, e.g. \"PLA CF\")",
     "Farbe (Name + Farbwert)": "Colour (name + value)",
     "Abrasiv (gehärtete Düse nötig)": "Abrasive (hardened nozzle required)",
@@ -302,6 +310,11 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Datensicherung
     "Datensicherung": "Backup",
+    "Spulengröße": "Spool size",
+    "Kein Leergewicht für {b} {s} bekannt.": "No empty weight known for {b} {s}.",
+    "Leergewicht {b} {s}: {g} g (Verwaltung)": "Empty weight {b} {s}: {g} g (settings)",
+    "Leergewicht {b} {s}: {g} g (gelernt aus {n} Spule(n))": "Empty weight {b} {s}: {g} g (learned from {n} spool(s))",
+    "Antippen, um Leergewichte je Spulengröße festzulegen. Grau mit ≈ = aus deinen Spulen gelernt.": "Tap to set empty weights per spool size. Grey with ≈ = learned from your spools.",
     "Jetzt sichern": "Back up now",
     "An Sicherungsdatei erinnern (nach Änderungen, spätestens alle 7 Tage)": "Remind me to save a backup file (after changes, at least every 7 days)",
     "Letzte Sicherungsdatei vor {d} Tagen – es gibt neue Änderungen.": "Last backup file {d} days ago – there are new changes.",
@@ -403,6 +416,7 @@
   if (LANG !== 'de') DEFAULT_SETTINGS.colors = { "Black": "#1A1A1A", "White": "#F5F5F5", "Grey": "#8A8A8A", "Red": "#C62828", "Blue": "#1565C0", "Green": "#2E7D32", "Yellow": "#F9D71C", "Orange": "#EF6C00", "Natural": "#E8E0C8" };
   let settings = loadJSON('fnfc_settings', null) || clone(DEFAULT_SETTINGS);
   for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
+  if (!settings.emptyWeights || typeof settings.emptyWeights !== 'object') settings.emptyWeights = {};
   // Vordefinierte Farben ohne gültigen Farbwert mit dem Standardwert ergänzen
   for (const n in settings.colors) {
     if (!/^#[0-9a-f]{6}$/i.test(String(settings.colors[n] || '')) && DEFAULT_SETTINGS.colors[n]) settings.colors[n] = DEFAULT_SETTINGS.colors[n];
@@ -416,7 +430,7 @@
   // Intern arbeiten wir mit "spool"; erst beim Schreiben wird daraus das Tag-JSON.
   function emptySpool() {
     return { id: "", brand: "", material: "", cn: "", hex: "#000000", abr: 0,
-             tmin: 0, tmax: 0, bed: 0, ew: 0, r: 0, cfg: {} };
+             tmin: 0, tmax: 0, bed: 0, ew: 0, r: 0, nw: 0, cfg: {} };
   }
   let cur = emptySpool();
 
@@ -518,7 +532,7 @@
     $(tabId).classList.add('active');
     if (btn) btn.classList.add('active');
     if (tabId === 'inventory') renderInventory();
-    if (tabId === 'settings') showStorageStatus();
+    if (tabId === 'settings') { renderSettings(); showStorageStatus(); }
     window.scrollTo(0, 0);
   }
 
@@ -554,9 +568,12 @@
   function createNewSpool() {
     cur = emptySpool();
     cur.id = generateID();
-    cur.ew = 250; cur.r = 1000; cur.tmin = 200; cur.tmax = 230; cur.bed = 60;
+    cur.nw = parseInt(localStorage.getItem('fnfc_lastSize')) || 1000;
+    cur.r = cur.nw; cur.tmin = 200; cur.tmax = 230; cur.bed = 60;
     $('numScaleWt').value = "";
     renderForm();
+    $('numEmptyWt').dataset.auto = '1';   // Leergewicht darf per Vorschlag gefüllt werden
+    applyEWSuggestion();
     updateLog(t("Neue Spule angelegt. Werte ausfüllen, dann speichern."));
   }
 
@@ -573,6 +590,36 @@
     updateLog(t("Demo-Spule geladen (ohne NFC)."));
   }
 
+  // ---------------- Leergewicht-Vorschlag ----------------
+  // 1. fest hinterlegter Wert (Verwaltung → Hersteller), sonst
+  // 2. gelernt: häufigster Wert deiner Spulen mit gleichem Hersteller + Größe
+  function suggestEW(brand, size) {
+    if (!brand || !size) return null;
+    const manual = settings.emptyWeights[brand] && settings.emptyWeights[brand][size];
+    if (manual) return { g: manual, src: 'manual' };
+    const vals = spools.filter(s => s.brand === brand && s.nw === size && s.ew > 0 && s.id !== cur.id).map(s => s.ew);
+    if (!vals.length) return null;
+    const freq = {};
+    vals.forEach(v => freq[v] = (freq[v] || 0) + 1);
+    const g = +Object.keys(freq).sort((a, b) => freq[b] - freq[a])[0];
+    return { g, src: 'learned', n: vals.length };
+  }
+
+  function sizeLabel(size) { return (size / 1000).toLocaleString(LANG === 'de' ? 'de-DE' : 'en-US') + ' kg'; }
+
+  function applyEWSuggestion() {
+    const brand = $('inVendor').value.trim(), size = parseInt($('selSize').value);
+    const sug = suggestEW(brand, size), field = $('numEmptyWt'), hint = $('ewHint');
+    if (!sug) { hint.textContent = brand ? t('Kein Leergewicht für {b} {s} bekannt.', { b: brand, s: sizeLabel(size) }) : ''; return; }
+    if (field.dataset.auto === '1' || !field.value) {
+      field.value = sug.g; field.dataset.auto = '1';
+      calcNetWeight(); updateSizeInfo();
+    }
+    hint.textContent = sug.src === 'manual'
+      ? t('Leergewicht {b} {s}: {g} g (Verwaltung)', { b: brand, s: sizeLabel(size), g: sug.g })
+      : t('Leergewicht {b} {s}: {g} g (gelernt aus {n} Spule(n))', { b: brand, s: sizeLabel(size), g: sug.g, n: sug.n });
+  }
+
   function renderForm() {
     $('tagId').value = cur.id;
     $('inVendor').value = cur.brand;
@@ -584,6 +631,8 @@
     $('numTmax').value = cur.tmax || "";
     $('numBed').value = cur.bed || "";
     $('numEmptyWt').value = cur.ew || "";
+    $('numEmptyWt').dataset.auto = '0';   // geladene Werte nie automatisch überschreiben
+    $('selSize').value = String(cur.nw || 1000);
     $('numNetWt').value = cur.r || "";
     updateAddPrinterDropdown();
     renderPrinterCards();
@@ -601,6 +650,7 @@
     cur.tmax = num($('numTmax').value);
     cur.bed = num($('numBed').value);
     cur.ew = num($('numEmptyWt').value);
+    cur.nw = parseInt($('selSize').value) || 0;
     cur.r = Math.round(num($('numNetWt').value));
   }
 
@@ -683,6 +733,7 @@
   // ---------------- Speichern ----------------
   function storeLocal() {
     collectForm();
+    if (cur.nw) localStorage.setItem('fnfc_lastSize', String(cur.nw));
     const entry = clone(cur);
     entry.updated = new Date().toISOString();
     const i = spools.findIndex(s => s.id === cur.id);
@@ -774,6 +825,7 @@
     cur = fromTagJSON(data);
     // Bekannte Spule: Farbname aus dem Inventar übernehmen, falls der Farbwert nicht in der Farbliste steht
     const inv = spools.find(s => s.id === cur.id);
+    if (inv && inv.nw) { cur.nw = inv.nw; $('selSize').value = String(inv.nw); }
     if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
     let note = "";
     if (!cur.id) { cur.id = generateID(); note = " " + t("Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."); }
@@ -976,7 +1028,36 @@
           <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('${key}')">+</button>
         </div>
       </div>`;
-    html += simpleCard('vendors', 'Hersteller', 'z.B. Extrudr');
+    // Hersteller mit Leergewichten je Spulengröße (aufklappbar)
+    const SIZES = [250, 500, 750, 1000, 2000, 3000];
+    html += `
+      <div class="card">
+        <h4>${t('Hersteller')}</h4>
+        <p class="hint" style="margin-top:0;">${t('Antippen, um Leergewichte je Spulengröße festzulegen. Grau mit ≈ = aus deinen Spulen gelernt.')}</p>
+        ${settings.vendors.map(v => {
+          const known = SIZES.filter(sz => (settings.emptyWeights[v] || {})[sz] || suggestEW(v, sz));
+          return `
+          <details class="list-row" style="display:block;">
+            <summary style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+              <span>${esc(v)}<span class="hint" style="font-size:12px;">${known.length ? ' · ' + known.map(sz => sizeLabel(sz)).join(', ') : ''}</span></span>
+              <button class="btn-danger btn-small" onclick="event.preventDefault(); deleteListItem('vendors','${esc(v)}')">✕</button>
+            </summary>
+            <div class="grid-3" style="margin-top:8px;">
+              ${SIZES.map(sz => {
+                const m = (settings.emptyWeights[v] || {})[sz];
+                const l = m ? null : suggestEW(v, sz);
+                return `<div><label>${sizeLabel(sz)}</label><input type="number" inputmode="numeric" value="${m || ''}"
+                  placeholder="${l ? '≈ ' + l.g : 'g'}"
+                  onchange="setEmptyWeight('${esc(v)}', ${sz}, this.value)" style="margin-bottom:6px;"></div>`;
+              }).join('')}
+            </div>
+          </details>`;
+        }).join('')}
+        <div class="row" style="margin-top:10px;">
+          <input type="text" id="add_vendors" placeholder="${t('z.B. Extrudr')}" style="flex:1; margin:0;">
+          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('vendors')">+</button>
+        </div>
+      </div>`;
     html += simpleCard('materials', 'Materialien', 'z.B. PETG HF');
     html += `<p class="hint">${t('Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.')}</p>`;
     $('settingsSections').innerHTML = html;
@@ -1017,6 +1098,14 @@
     saveSettings(); refreshLists(); renderSettings();
   }
 
+  function setEmptyWeight(vendor, size, value) {
+    const g = Math.round(num(value));
+    settings.emptyWeights[vendor] = settings.emptyWeights[vendor] || {};
+    if (g > 0) settings.emptyWeights[vendor][size] = g; else delete settings.emptyWeights[vendor][size];
+    if (!Object.keys(settings.emptyWeights[vendor]).length) delete settings.emptyWeights[vendor];
+    saveSettings();
+  }
+
   function addListItem(key) {
     const v = $('add_' + key).value.trim();
     if (!v || settings[key].includes(v)) return;
@@ -1055,6 +1144,7 @@
       if (!confirm(t('Backup vom {date} mit {n} Spule(n) importieren? Aktuelle Daten werden ersetzt.', { date: data.exported || '?', n: data.spools.length }))) return;
       settings = data.settings;
       for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
+      if (!settings.emptyWeights) settings.emptyWeights = {};
       spools = data.spools;
       saveSettings(); saveSpools(); initApp();
       sendSnapshot(true);
@@ -1233,6 +1323,7 @@
       <details class="card"><summary>3. Spule lesen</summary>
         <p><b>NFC-Tag lesen</b> tippen und Handy an die Spule halten. Der Scanner bleibt aktiv, du kannst nacheinander mehrere Spulen lesen. Unbekannte Spulen landen automatisch im Inventar (abschaltbar in der Verwaltung). Auch fremde OpenSpool-Tags werden erkannt.</p></details>
       <details class="card"><summary>4. Restgewicht aktualisieren</summary>
+        <p class="hint">Das Leergewicht schlägt die App anhand von Hersteller und Spulengröße vor: entweder aus <b>Verwaltung → Hersteller</b> (antippen) oder gelernt aus deinen bisherigen Spulen.</p>
         <ol><li>Spule lesen.</li><li>Spule auf die Küchenwaage legen und den Wert bei <b>Waage brutto</b> eintragen – das Netto wird mit dem Leergewicht berechnet.</li><li>Auf NFC-Tag schreiben.</li></ol></details>
       <details class="card"><summary>5. Profil für den Slicer exportieren</summary>
         <p>In jeder Druckerkarte gibt es die Buttons <b>PrusaSlicer</b> und <b>Orca</b>. Die Datei landet in „Downloads“.</p>
@@ -1283,6 +1374,7 @@
       <details class="card"><summary>3. Read a spool</summary>
         <p>Tap <b>Read NFC tag</b> and hold the phone to the spool. The scanner stays active, so you can read several spools in a row. Unknown spools are added to the inventory automatically (can be turned off in Settings). Foreign OpenSpool tags are recognised too.</p></details>
       <details class="card"><summary>4. Update remaining weight</summary>
+        <p class="hint">The app suggests the empty weight based on brand and spool size: either from <b>Settings → Brands</b> (tap a brand) or learned from your previous spools.</p>
         <ol><li>Read the spool.</li><li>Put it on a kitchen scale and enter the value under <b>Scale gross</b> – net weight is calculated from the empty spool weight.</li><li>Write to NFC tag.</li></ol></details>
       <details class="card"><summary>5. Export a slicer profile</summary>
         <p>Each printer card has <b>PrusaSlicer</b> and <b>Orca</b> buttons. The file is saved to “Downloads”.</p>
