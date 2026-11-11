@@ -122,6 +122,10 @@
         <button class="btn-secondary" onclick="loadDemoTag()">Demo laden</button>
       </div>
       <div id="log">Bereit.</div>
+      <div id="backupBar" style="display:none; padding:10px; background:#3a2f00; border-left:4px solid #ffc107; font-size:13px; margin-bottom:12px;">
+        <span id="backupBarText"></span>
+        <button class="btn-secondary btn-small" style="margin-top:8px; display:block;" onclick="manualBackup()">Jetzt sichern</button>
+      </div>
     </div>
 
     <div class="card" style="border-left: 3px solid var(--primary);">
@@ -198,7 +202,7 @@
       <h4>Datensicherung</h4>
       <div id="storageStatus" class="hint" style="padding:8px; background:#1a1a1a; border-radius:4px; margin-bottom:10px;"></div>
       <label style="display:flex; align-items:center;">
-        <input type="checkbox" id="optDailyFile" onchange="setOpt('dailyFile', this.checked)"> Tägliche Sicherungsdatei in „Downloads“ (beim ersten Speichern des Tages)
+        <input type="checkbox" id="optDailyFile" onchange="setOpt('dailyFile', this.checked)"> An Sicherungsdatei erinnern (nach Änderungen, spätestens alle 7 Tage)
       </label>
       <label style="display:flex; align-items:center;">
         <input type="checkbox" id="optAutoAdd" onchange="setOpt('autoAdd', this.checked)"> Gelesene Tags automatisch ins Inventar übernehmen
@@ -207,7 +211,7 @@
       <button class="btn-secondary" id="btnSnapshot" onclick="sendSnapshot(true)" style="display:none;">Jetzt Vollsicherung im Termux-Ordner anlegen</button>
       <p class="hint">Manuell sichern oder wiederherstellen (z.B. neues Handy):</p>
       <div class="grid-2">
-        <button class="btn-secondary" onclick="exportBackup()">Backup exportieren</button>
+        <button class="btn-secondary" onclick="manualBackup()">Backup exportieren</button>
         <button class="btn-secondary" onclick="document.getElementById('importFile').click()">Backup importieren</button>
       </div>
       <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="importBackup(this.files[0])">
@@ -298,6 +302,11 @@
     "\"{name}\" existiert schon ({hex}). Farbwert überschreiben?": "\"{name}\" already exists ({hex}). Overwrite colour value?",
     // Datensicherung
     "Datensicherung": "Backup",
+    "Jetzt sichern": "Back up now",
+    "An Sicherungsdatei erinnern (nach Änderungen, spätestens alle 7 Tage)": "Remind me to save a backup file (after changes, at least every 7 days)",
+    "Letzte Sicherungsdatei vor {d} Tagen – es gibt neue Änderungen.": "Last backup file {d} days ago – there are new changes.",
+    "Noch keine Sicherungsdatei angelegt.": "No backup file created yet.",
+    "Sicherungsdatei in „Downloads“ gespeichert.": "Backup file saved to “Downloads”.",
     "Tägliche Sicherungsdatei in „Downloads“ (beim ersten Speichern des Tages)": "Daily backup file in “Downloads” (on the first save of the day)",
     "Gelesene Tags automatisch ins Inventar übernehmen": "Add scanned tags to the inventory automatically",
     "Jetzt Vollsicherung im Termux-Ordner anlegen": "Create full backup in the Termux folder now",
@@ -1034,6 +1043,8 @@
   function exportBackup() {
     const data = { app: "filament-nfc", version: 2, exported: new Date().toISOString(), settings, spools };
     download(`filament-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 2), 'application/json');
+    localStorage.setItem('fnfc_lastFile', new Date().toISOString().slice(0, 10));
+    localStorage.removeItem('fnfc_dirty');
   }
 
   async function importBackup(file) {
@@ -1150,15 +1161,31 @@
   let opts = Object.assign({ dailyFile: true, autoAdd: true }, loadJSON('fnfc_opts', {}));
   function setOpt(k, v) { opts[k] = v; localStorage.setItem('fnfc_opts', JSON.stringify(opts)); showStorageStatus(); }
 
-  // Ohne Server darf ein Browser nicht still Dateien schreiben – ein Download direkt nach
-  // einem Tippen auf "Speichern" ist aber erlaubt. Daher: höchstens eine Datei pro Tag.
-  function dailyFileBackup() {
-    if (!opts.dailyFile || backupServer) return;   // mit Termux-Server sichert der Server
-    const today = new Date().toISOString().slice(0, 10);
-    if (localStorage.getItem('fnfc_lastFile') === today) return;
+  // Ohne Server darf ein Browser nicht still Dateien schreiben. Statt beim Speichern
+  // (stört das NFC-Schreiben) einen Download auszulösen, merkt sich die App nur, dass
+  // es Änderungen gibt, und zeigt nach spätestens 7 Tagen einen Hinweis mit Button.
+  const BACKUP_DAYS = 7;
+  function dailyFileBackup() {           // wird nach jeder Änderung aufgerufen
+    localStorage.setItem('fnfc_dirty', '1');
+    showBackupBar();
+  }
+
+  function showBackupBar() {
+    const bar = $('backupBar');
+    const last = localStorage.getItem('fnfc_lastFile');
+    const days = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : Infinity;
+    const due = opts.dailyFile && !backupServer && localStorage.getItem('fnfc_dirty') && spools.length && days >= BACKUP_DAYS;
+    bar.style.display = due ? '' : 'none';
+    if (due) $('backupBarText').textContent = last
+      ? t('Letzte Sicherungsdatei vor {d} Tagen – es gibt neue Änderungen.', { d: days })
+      : t('Noch keine Sicherungsdatei angelegt.');
+  }
+
+  function manualBackup() {
     exportBackup();
-    localStorage.setItem('fnfc_lastFile', today);
+    showBackupBar();
     showStorageStatus();
+    updateLog(t('Sicherungsdatei in „Downloads“ gespeichert.'));
   }
 
   let persisted = null;
@@ -1226,7 +1253,7 @@
       <details class="card"><summary>7. Datensicherung</summary>
         <ul>
           <li>Die Daten liegen in der App auf dem Handy.</li>
-          <li>Beim ersten Speichern eines Tages legt die App eine Sicherungsdatei in „Downloads“ ab.</li>
+          <li>Gibt es Änderungen und ist die letzte Sicherungsdatei älter als 7 Tage, erscheint oben ein gelber Hinweis. <b>Jetzt sichern</b> legt die Datei in „Downloads“ ab. Jederzeit möglich über <b>Verwaltung → Backup exportieren</b>.</li>
           <li>Wiederherstellen: <b>Verwaltung → Backup importieren</b> – oder einfach alle Spulen abscannen, denn alle wichtigen Daten stehen auf den Tags.</li>
         </ul></details>
       <details class="card"><summary>8. Probleme?</summary>
@@ -1276,7 +1303,7 @@
       <details class="card"><summary>7. Backup</summary>
         <ul>
           <li>Data is stored inside the app on your phone.</li>
-          <li>On the first save of each day, the app puts a backup file into “Downloads”.</li>
+          <li>If there are changes and the last backup file is older than 7 days, a yellow notice appears at the top. <b>Back up now</b> saves the file to “Downloads”. Available any time via <b>Settings → Export backup</b>.</li>
           <li>Restore: <b>Settings → Import backup</b> – or simply scan all spools, as all important data is on the tags.</li>
         </ul></details>
       <details class="card"><summary>8. Problems?</summary>
@@ -1298,7 +1325,7 @@
 
   initApp();
   initStorage();
-  initBackup();
+  initBackup().then(showBackupBar);
 </script>
 </body>
 </html>
