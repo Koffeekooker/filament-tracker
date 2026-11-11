@@ -1,0 +1,9 @@
+Filament NFC – Web-App
+======================
+Alle Dateien gehören zusammen in einen Ordner und werden gemeinsam hochgeladen:
+  index.html, manifest.webmanifest, sw.js, icon-192.png, icon-512.png
+Optional (nur für Termux-Betrieb): filament_server.py
+
+Bei einer neuen Version von index.html in sw.js die Zeile
+  const CACHE = "filament-v1";
+hochzählen (v2, v3 ...), damit das Handy die neue Version lädt.

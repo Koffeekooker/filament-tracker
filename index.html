@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#121212">
+  <title>Filament NFC</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+
+  <!--
+    ========================================================================
+    FILAMENT NFC – Spulenverwaltung für Android (Chrome + Web NFC)
+    ========================================================================
+    Jede Spule bekommt einen NFC-Tag (NTAG215/216). Auf dem Tag steht ALLES
+    Wichtige, damit die Spule auch ohne diese App und ohne das Handy
+    verständlich bleibt:
+
+    Record 1 – MIME "application/json", OpenSpool-kompatibel (openspool.io):
+      Standardfelder, die auch fremde Apps/Drucker verstehen:
+        protocol, version, brand, type, subtype, color_hex,
+        min_temp, max_temp, bed_min_temp, bed_max_temp
+      Eigene Zusatzfelder (werden von anderen Lesern ignoriert):
+        id  : 4-stellige Spulen-ID
+        abr : 1 = abrasiv
+        ew  : Leergewicht der Spule in g
+        r   : Restgewicht Filament in g
+        cfg : Druckerprofile, Schlüssel = Drucker-Code (z.B. "PCO"),
+              Wert = kompakte, lesbare Zeile, z.B. "T215 B55 F0.98 PA0.04 MF15 R0.8/35"
+                T  Düsentemp °C          B  Betttemp °C (optional, sonst global)
+                F  Flow-Faktor           PA Pressure/Linear Advance
+                MF Max. Volumenstrom mm³/s
+                R  Retract Länge mm / Geschwindigkeit mm/s
+              Damit passen 5 Druckerprofile auf einen NTAG215.
+
+    Record 2 – Text (optional): Klartext-Zusammenfassung, die jede
+      NFC-App (z.B. "NFC Tools") direkt anzeigt.
+
+    Lokal im Browser (localStorage) liegen nur: Inventar-Kopie aller Spulen
+    und die Stammdaten (Vorschlagslisten, Drucker). Backup über Export.
+  ======================================================================== -->
+
+  <style>
+    :root {
+      --bg: #121212; --bg-card: #1e1e1e; --bg-input: #2a2a2a;
+      --text: #e0e0e0; --muted: #888; --primary: #0d6efd; --success: #198754; --danger: #dc3545;
+      --border: #333;
+    }
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    .tabs { display: flex; background: var(--bg-card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+    .tab-btn { flex: 1; padding: 15px 5px; font-weight: bold; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; margin: 0; border-radius: 0; }
+    .tab-btn.active { color: var(--primary); border-bottom: 3px solid var(--primary); }
+    .tab-content { display: none; padding: 15px; max-width: 600px; margin: 0 auto; }
+    .tab-content.active { display: block; }
+
+    h4 { margin: 0 0 10px; }
+    .card { background: var(--bg-card); padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid var(--border); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .grid-4 input { padding: 8px 6px; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .hint { font-size: 13px; color: var(--muted); }
+
+    label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
+    input, select { width: 100%; padding: 10px; margin-bottom: 12px; background: var(--bg-input); color: white;
+      border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; font-size: 15px; }
+    input[type="checkbox"] { width: auto; transform: scale(1.4); margin: 6px 10px 6px 4px; }
+    input[type="color"] { padding: 2px; height: 42px; width: 56px; flex: none; }
+
+    button { padding: 12px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; width: 100%; margin-bottom: 10px; font-size: 14px; }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-success { background: var(--success); color: white; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-secondary { background: var(--bg-input); color: white; border: 1px solid var(--border); }
+    .btn-small { padding: 6px 10px; font-size: 12px; width: auto; margin-bottom: 0; }
+
+    #log { padding: 10px; background: var(--bg-input); border-left: 4px solid var(--primary); font-size: 13px; margin-bottom: 12px; min-height: 20px; }
+    #sizeInfo { font-size: 12px; color: var(--muted); margin: -4px 0 10px; }
+    .printer-profile { border: 1px solid #444; padding: 10px; border-radius: 6px; margin-bottom: 10px; background: #1a1a1a; }
+    .printer-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 6px; flex-wrap: wrap; }
+    .swatch { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 1px solid #666; vertical-align: middle; margin-right: 6px; flex: none; }
+    .inventory-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .list-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 5px; padding: 6px; background: #1a1a1a; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('scanner', this)">Spule</button>
+    <button class="tab-btn" onclick="switchTab('inventory', this)">Inventar</button>
+    <button class="tab-btn" onclick="switchTab('settings', this)">Verwaltung</button>
+  </div>
+
+  <!-- ===================== MODUL 1: SPULE ===================== -->
+  <div id="scanner" class="tab-content active">
+
+    <div class="card">
+      <div class="grid-2">
+        <div>
+          <label>Tag-Typ</label>
+          <select id="tagType" onchange="updateSizeInfo()">
+            <option value="504" selected>NTAG215 (504 Bytes)</option>
+            <option value="888">NTAG216 (888 Bytes)</option>
+            <option value="144">NTAG213 (144 Bytes – zu klein)</option>
+          </select>
+        </div>
+        <div>
+          <label>Spulen-ID</label>
+          <input type="text" id="tagId" readonly style="font-family: monospace; font-weight: bold;">
+        </div>
+      </div>
+      <button class="btn-primary" onclick="readNFC()">NFC-Tag lesen</button>
+      <div class="grid-2">
+        <button class="btn-secondary" onclick="createNewSpool()">Neue Spule</button>
+        <button class="btn-secondary" onclick="loadDemoTag()">Demo laden</button>
+      </div>
+      <div id="log">Bereit.</div>
+    </div>
+
+    <div class="card" style="border-left: 3px solid var(--primary);">
+      <h4>Filament</h4>
+      <label>Hersteller</label>
+      <input type="text" id="inVendor" list="dlVendors" placeholder="z.B. Polymaker" oninput="updateSizeInfo()">
+      <label>Material (Typ + Variante, z.B. "PLA CF")</label>
+      <input type="text" id="inMaterial" list="dlMaterials" placeholder="z.B. PLA CF" oninput="updateSizeInfo()">
+      <label>Farbe (Name + Farbwert)</label>
+      <div class="row">
+        <input type="text" id="inColorName" list="dlColors" placeholder="z.B. Schwarz" oninput="colorNameChanged()">
+        <input type="color" id="inColorHex" value="#000000" style="margin-bottom:12px;" oninput="colorHexChanged()">
+      </div>
+      <label style="display:flex; align-items:center;">
+        <input type="checkbox" id="chkAbrasive"> Abrasiv (gehärtete Düse nötig)
+      </label>
+      <div class="grid-3">
+        <div><label>Düse min °C</label><input type="number" id="numTmin" inputmode="numeric"></div>
+        <div><label>Düse max °C</label><input type="number" id="numTmax" inputmode="numeric"></div>
+        <div><label>Bett °C</label><input type="number" id="numBed" inputmode="numeric"></div>
+      </div>
+      <div class="grid-3">
+        <div><label>Leergewicht g</label><input type="number" id="numEmptyWt" inputmode="numeric" oninput="calcNetWeight()"></div>
+        <div><label>Waage brutto g</label><input type="number" id="numScaleWt" inputmode="numeric" oninput="calcNetWeight()" placeholder="wiegen"></div>
+        <div><label>Rest netto g</label><input type="number" id="numNetWt" inputmode="numeric" style="color:#00ff66;"></div>
+      </div>
+    </div>
+
+    <div class="card" style="border-left: 3px solid #0dcaf0;">
+      <h4>Druckerprofile</h4>
+      <div id="printerProfilesContainer"></div>
+      <label style="margin-top:10px;">Profil hinzufügen</label>
+      <div class="row">
+        <select id="selAddPrinter" style="margin:0;"></select>
+        <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addPrinterProfile()">+</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label style="display:flex; align-items:center;">
+        <input type="checkbox" id="chkSummary" onchange="updateSizeInfo()"> Zusätzliche Klartext-Zeile (~70 Bytes, nur bei wenigen Profilen)
+      </label>
+      <div id="sizeInfo"></div>
+      <button class="btn-success" onclick="saveToTag()">Speichern &amp; auf NFC schreiben</button>
+      <button class="btn-secondary" onclick="saveLocalOnly()">Nur lokal speichern</button>
+    </div>
+  </div>
+
+  <!-- ===================== MODUL 2: INVENTAR ===================== -->
+  <div id="inventory" class="tab-content">
+    <div class="card">
+      <div class="grid-2">
+        <div><label>Suche</label><input type="search" id="invSearch" placeholder="Hersteller, Farbe, ID…" oninput="renderInventory()"></div>
+        <div><label>Material</label><select id="invFilter" onchange="renderInventory()"></select></div>
+      </div>
+    </div>
+    <div id="inventoryList"></div>
+  </div>
+
+  <!-- ===================== MODUL 3: VERWALTUNG ===================== -->
+  <div id="settings" class="tab-content">
+    <p class="hint">Vorschlagslisten für die Eingabefelder. Auf dem Tag steht immer der Klartext – diese Listen sind nur eine Eingabehilfe.</p>
+    <div id="settingsSections"></div>
+
+    <div class="card">
+      <h4>Datensicherung</h4>
+      <div id="storageStatus" class="hint" style="padding:8px; background:#1a1a1a; border-radius:4px; margin-bottom:10px;"></div>
+      <label style="display:flex; align-items:center;">
+        <input type="checkbox" id="optDailyFile" onchange="setOpt('dailyFile', this.checked)"> Tägliche Sicherungsdatei in „Downloads“ (beim ersten Speichern des Tages)
+      </label>
+      <label style="display:flex; align-items:center;">
+        <input type="checkbox" id="optAutoAdd" onchange="setOpt('autoAdd', this.checked)"> Gelesene Tags automatisch ins Inventar übernehmen
+      </label>
+      <div id="autoBackupStatus" class="hint" style="padding:8px; background:#1a1a1a; border-radius:4px; margin:10px 0; display:none;"></div>
+      <button class="btn-secondary" id="btnSnapshot" onclick="sendSnapshot(true)" style="display:none;">Jetzt Vollsicherung im Termux-Ordner anlegen</button>
+      <p class="hint">Manuell sichern oder wiederherstellen (z.B. neues Handy):</p>
+      <div class="grid-2">
+        <button class="btn-secondary" onclick="exportBackup()">Backup exportieren</button>
+        <button class="btn-secondary" onclick="document.getElementById('importFile').click()">Backup importieren</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="importBackup(this.files[0])">
+    </div>
+  </div>
+
+  <datalist id="dlVendors"></datalist>
+  <datalist id="dlMaterials"></datalist>
+  <datalist id="dlColors"></datalist>
+
+<script>
+  // ===================================================================
+  // Stammdaten (nur Eingabehilfe) und Drucker
+  // fw = Firmware-Familie, bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export
+  // ===================================================================
+  const DEFAULT_SETTINGS = {
+    vendors: ["Polymaker", "Prusament", "Sunlu", "eSun", "Bambu Lab", "Elegoo"],
+    materials: ["PLA", "PLA CF", "PLA Silk", "PETG", "PETG CF", "ABS", "ASA", "TPU", "PA CF", "PC"],
+    colors: { "Schwarz": "#1A1A1A", "Weiß": "#F5F5F5", "Grau": "#8A8A8A", "Rot": "#C62828", "Blau": "#1565C0", "Grün": "#2E7D32", "Gelb": "#F9D71C", "Orange": "#EF6C00", "Natur": "#E8E0C8" },
+    printers: {
+      "PCO": { name: "Prusa CoreOne", fw: "prusa" },
+      "SU1": { name: "Snapmaker U1",  fw: "klipper" },
+      "V0":  { name: "Voron 0",       fw: "klipper" },
+      "PMI": { name: "Prusa Mini",    fw: "prusa" }
+    }
+  };
+  const FW_LABELS = { prusa: "Prusa (M572)", klipper: "Klipper (SET_PRESSURE_ADVANCE)", marlin: "Marlin (M900)" };
+  const DEFAULT_PROFILE = { t: 215, f: 1.0, pa: 0.0, mf: 12, rd: 0.8, rs: 35 };
+  const PROFILE_FIELDS = [
+    ['t', 'Düse °C', '1'], ['b', 'Bett °C', '1'], ['f', 'Flow', '0.01'],
+    ['pa', 'PA', '0.001'], ['mf', 'Max mm³/s', '0.5'], ['rd', 'Retr. mm', '0.1'], ['rs', 'Retr. mm/s', '1']
+  ];
+
+  // ---------------- Hilfsfunktionen ----------------
+  function loadJSON(key, fallback) {
+    try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; } catch (e) { return fallback; }
+  }
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const $ = id => document.getElementById(id);
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
+  function num(v, fallback = 0) {
+    const n = parseFloat(String(v ?? "").replace(',', '.'));
+    return isNaN(n) ? fallback : n;
+  }
+  const utf8Len = s => new TextEncoder().encode(s).length;
+
+  let settings = loadJSON('fnfc_settings', null) || clone(DEFAULT_SETTINGS);
+  for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
+  // Vordefinierte Farben ohne gültigen Farbwert mit dem Standardwert ergänzen
+  for (const n in settings.colors) {
+    if (!/^#[0-9a-f]{6}$/i.test(String(settings.colors[n] || '')) && DEFAULT_SETTINGS.colors[n]) settings.colors[n] = DEFAULT_SETTINGS.colors[n];
+  }
+  let spools = loadJSON('fnfc_spools', []);
+  if (!Array.isArray(spools)) spools = [];
+  const saveSettings = () => { localStorage.setItem('fnfc_settings', JSON.stringify(settings)); journal({ op: 'settings', data: settings }); };
+  const saveSpools = () => localStorage.setItem('fnfc_spools', JSON.stringify(spools));
+
+  // ---------------- Datenmodell einer Spule ----------------
+  // Intern arbeiten wir mit "spool"; erst beim Schreiben wird daraus das Tag-JSON.
+  function emptySpool() {
+    return { id: "", brand: "", material: "", cn: "", hex: "#000000", abr: 0,
+             tmin: 0, tmax: 0, bed: 0, ew: 0, r: 0, cfg: {} };
+  }
+  let cur = emptySpool();
+
+  // Material "PLA CF" -> OpenSpool type "PLA", subtype "CF"
+  function splitMaterial(m) {
+    const parts = String(m).trim().split(/\s+/);
+    return { type: (parts.shift() || "").toUpperCase(), subtype: parts.join(" ") };
+  }
+
+  // Spule -> Tag-JSON (OpenSpool + Zusatzfelder)
+  function toTagJSON(s) {
+    const { type, subtype } = splitMaterial(s.material);
+    const o = { protocol: "openspool", version: "1.0", brand: s.brand || "Generic", type: type || "PLA" };
+    if (subtype) o.subtype = subtype;
+    o.color_hex = (s.hex || "#000000").toUpperCase();
+    if (s.tmin) o.min_temp = String(s.tmin);
+    if (s.tmax) o.max_temp = String(s.tmax);
+    if (s.bed) { o.bed_min_temp = s.bed; o.bed_max_temp = s.bed; }
+    o.id = s.id;
+    if (s.abr) o.abr = 1;
+    o.ew = s.ew; o.r = s.r;
+    o.cfg = {};
+    for (const code in s.cfg) o.cfg[code] = profileToString(s.cfg[code]);
+    return o;
+  }
+
+  // Profil-Objekt -> "T215 B55 F0.98 PA0.04 MF15 R0.8/35"
+  function profileToString(p) {
+    const parts = [`T${p.t}`];
+    if (p.b !== undefined && p.b !== null && p.b !== '') parts.push(`B${p.b}`);
+    parts.push(`F${p.f}`, `PA${p.pa}`, `MF${p.mf}`, `R${p.rd}/${p.rs}`);
+    return parts.join(' ');
+  }
+
+  // Lesbare Zeile -> Profil-Objekt (alte Objekt-Schreibweise wird auch akzeptiert)
+  function profileFromString(v) {
+    if (v && typeof v === 'object') return clone(v);
+    const p = {};
+    for (const tok of String(v).trim().split(/\s+/)) {
+      const m = tok.match(/^(PA|MF|T|B|F|R)(.+)$/i);
+      if (!m) continue;
+      const key = m[1].toUpperCase(), val = m[2];
+      if (key === 'R') { const [rd, rs] = val.split('/'); p.rd = num(rd); if (rs !== undefined) p.rs = num(rs); }
+      else p[{ T: 't', B: 'b', F: 'f', PA: 'pa', MF: 'mf' }[key]] = num(val);
+    }
+    return Object.assign(clone(DEFAULT_PROFILE), p);
+  }
+
+  // Tag-JSON (auch fremde OpenSpool-Tags) -> Spule
+  function fromTagJSON(o) {
+    const s = emptySpool();
+    s.id = o.id || "";
+    s.brand = o.brand || "";
+    s.material = [o.type, o.subtype].filter(Boolean).join(" ");
+    let hex = String(o.color_hex || "000000").replace('#', '');
+    s.hex = /^[0-9a-f]{6}/i.test(hex) ? '#' + hex.slice(0, 6).toUpperCase() : "#000000";
+    // Farbname steht nicht auf dem Tag – über den Farbwert aus der Farbliste ermitteln
+    s.cn = o.cn || colorNameForHex(s.hex);
+    s.abr = o.abr ? 1 : 0;
+    s.tmin = num(o.min_temp); s.tmax = num(o.max_temp);
+    s.bed = num(o.bed_max_temp ?? o.bed_min_temp);
+    s.ew = num(o.ew); s.r = num(o.r);
+    s.cfg = {};
+    if (o.cfg && typeof o.cfg === 'object') for (const code in o.cfg) s.cfg[code] = profileFromString(o.cfg[code]);
+    return s;
+  }
+
+  function colorNameForHex(hex) {
+    const h = String(hex).toUpperCase();
+    return Object.keys(settings.colors).find(n => String(settings.colors[n]).toUpperCase() === h) || "";
+  }
+
+  // Klartext für Record 2 – das sieht jeder mit einer beliebigen NFC-App
+  function summaryText(s) {
+    const parts = [`${s.brand || '?'} ${s.material || '?'}${s.cn ? ' ' + s.cn : ''}`];
+    if (s.tmin || s.tmax) parts.push(`${s.tmin || '?'}-${s.tmax || '?'}°C`);
+    if (s.bed) parts.push(`Bett ${s.bed}°C`);
+    if (s.abr) parts.push('abrasiv');
+    return parts.join(' | ');
+  }
+
+  // Exakter NDEF-Platzbedarf (Record-Header + TLV + Terminator)
+  function ndefSize(jsonStr, text) {
+    const rec = (typeLen, payloadLen) => 2 + (payloadLen < 256 ? 1 : 4) + typeLen + payloadLen;
+    let msg = rec(16, utf8Len(jsonStr));              // "application/json" = 16 Zeichen
+    if (text) msg += rec(1, 3 + utf8Len(text));        // Typ "T", Status-Byte + "en"
+    return msg + (msg < 255 ? 2 : 4) + 1;
+  }
+
+  // ---------------- UI ----------------
+  function updateLog(msg, isError = false) {
+    $('log').innerText = msg;
+    $('log').style.borderLeftColor = isError ? 'var(--danger)' : 'var(--primary)';
+  }
+
+  function switchTab(tabId, btn) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    $(tabId).classList.add('active');
+    if (btn) btn.classList.add('active');
+    if (tabId === 'inventory') renderInventory();
+    if (tabId === 'settings') showStorageStatus();
+    window.scrollTo(0, 0);
+  }
+
+  function initApp() {
+    refreshLists();
+    renderSettings();
+    renderForm();
+    renderInventory();
+  }
+
+  function refreshLists() {
+    $('dlVendors').innerHTML = settings.vendors.map(v => `<option value="${esc(v)}">`).join('');
+    $('dlMaterials').innerHTML = settings.materials.map(v => `<option value="${esc(v)}">`).join('');
+    $('dlColors').innerHTML = Object.keys(settings.colors).map(v => `<option value="${esc(v)}">`).join('');
+    updateAddPrinterDropdown();
+  }
+
+  // Bekannter Farbname gewählt -> Farbwert automatisch setzen
+  function colorNameChanged() {
+    const hex = settings.colors[$('inColorName').value.trim()];
+    if (hex) $('inColorHex').value = hex;
+    updateSizeInfo();
+  }
+
+  function generateID() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let id;
+    do { id = Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join(''); }
+    while (spools.some(s => s.id === id));
+    return id;
+  }
+
+  function createNewSpool() {
+    cur = emptySpool();
+    cur.id = generateID();
+    cur.ew = 250; cur.r = 1000; cur.tmin = 200; cur.tmax = 230; cur.bed = 60;
+    $('numScaleWt').value = "";
+    renderForm();
+    updateLog("Neue Spule angelegt. Werte ausfüllen, dann speichern.");
+  }
+
+  function loadDemoTag() {
+    cur = fromTagJSON({
+      protocol: "openspool", version: "1.0", brand: "Polymaker", type: "PLA", subtype: "CF",
+      color_hex: "#1A1A1A", min_temp: "210", max_temp: "230", bed_min_temp: 60, bed_max_temp: 60,
+      id: "x7b9", abr: 1, ew: 250, r: 685,
+      cfg: { "PCO": { t: 215, f: 0.98, pa: 0.04, mf: 15, rd: 0.8, rs: 35 },
+             "SU1": { t: 220, b: 55, f: 1.0, pa: 0.06, mf: 12, rd: 1.2, rs: 40 } }
+    });
+    $('numScaleWt').value = "";
+    renderForm();
+    updateLog("Demo-Spule geladen (ohne NFC).");
+  }
+
+  function renderForm() {
+    $('tagId').value = cur.id;
+    $('inVendor').value = cur.brand;
+    $('inMaterial').value = cur.material;
+    $('inColorName').value = cur.cn;
+    $('inColorHex').value = cur.hex || "#000000";
+    $('chkAbrasive').checked = !!cur.abr;
+    $('numTmin').value = cur.tmin || "";
+    $('numTmax').value = cur.tmax || "";
+    $('numBed').value = cur.bed || "";
+    $('numEmptyWt').value = cur.ew || "";
+    $('numNetWt').value = cur.r || "";
+    updateAddPrinterDropdown();
+    renderPrinterCards();
+    updateSizeInfo();
+  }
+
+  // Formular -> cur
+  function collectForm() {
+    cur.brand = $('inVendor').value.trim();
+    cur.material = $('inMaterial').value.trim();
+    cur.cn = $('inColorName').value.trim();
+    cur.hex = $('inColorHex').value;
+    cur.abr = $('chkAbrasive').checked ? 1 : 0;
+    cur.tmin = num($('numTmin').value);
+    cur.tmax = num($('numTmax').value);
+    cur.bed = num($('numBed').value);
+    cur.ew = num($('numEmptyWt').value);
+    cur.r = Math.round(num($('numNetWt').value));
+  }
+
+  function calcNetWeight() {
+    const scale = parseFloat($('numScaleWt').value);
+    if (!isNaN(scale)) $('numNetWt').value = Math.max(0, Math.round(scale - num($('numEmptyWt').value)));
+  }
+
+  function updateSizeInfo() {
+    if (!cur.id) { $('sizeInfo').textContent = ""; return; }
+    collectForm();
+    const json = JSON.stringify(toTagJSON(cur));
+    const withSum = $('chkSummary').checked;
+    const size = ndefSize(json, withSum ? summaryText(cur) : null);
+    const cap = parseInt($('tagType').value);
+    $('sizeInfo').textContent = `Tag-Belegung: ${size} / ${cap} Bytes` + (size > cap ? '  ⚠ zu groß' : '');
+    $('sizeInfo').style.color = size > cap ? 'var(--danger)' : 'var(--muted)';
+  }
+
+  // ---------------- Druckerprofile ----------------
+  function updateAddPrinterDropdown() {
+    $('selAddPrinter').innerHTML = Object.entries(settings.printers)
+      .filter(([code]) => !cur.cfg[code])
+      .map(([code, p]) => `<option value="${esc(code)}">${esc(p.name)} (${esc(code)})</option>`).join('');
+  }
+
+  function addPrinterProfile() {
+    if (!cur.id) { updateLog("Erst eine Spule lesen oder neu anlegen.", true); return; }
+    const code = $('selAddPrinter').value;
+    if (!code) return;
+    const p = clone(DEFAULT_PROFILE);
+    if (cur.tmin && cur.tmax) p.t = Math.round((cur.tmin + cur.tmax) / 2);
+    cur.cfg[code] = p;
+    updateAddPrinterDropdown();
+    renderPrinterCards();
+    updateSizeInfo();
+  }
+
+  function removePrinterProfile(code) {
+    if (!confirm(`Profil ${code} von dieser Spule entfernen?`)) return;
+    delete cur.cfg[code];
+    updateAddPrinterDropdown();
+    renderPrinterCards();
+    updateSizeInfo();
+  }
+
+  function setProfileValue(code, field, value) {
+    if (!cur.cfg[code]) return;
+    if (field === 'b' && String(value).trim() === '') delete cur.cfg[code].b;
+    else cur.cfg[code][field] = num(value);
+    updateSizeInfo();
+  }
+
+  function renderPrinterCards() {
+    const codes = Object.keys(cur.cfg);
+    if (!codes.length) { $('printerProfilesContainer').innerHTML = "<p class='hint'>Noch keine Profile auf dieser Spule.</p>"; return; }
+    $('printerProfilesContainer').innerHTML = codes.map(code => {
+      const p = cur.cfg[code], c = esc(code);
+      const name = settings.printers[code] ? settings.printers[code].name : code + ' (unbekannt)';
+      return `
+        <div class="printer-profile">
+          <div class="printer-header">
+            <strong>${esc(name)}</strong>
+            <div class="row">
+              <button class="btn-secondary btn-small" onclick="exportProfile('${c}','prusa')">PrusaSlicer</button>
+              <button class="btn-secondary btn-small" onclick="exportProfile('${c}','orca')">Orca</button>
+              <button class="btn-danger btn-small" onclick="removePrinterProfile('${c}')">✕</button>
+            </div>
+          </div>
+          <div class="grid-4">
+            ${PROFILE_FIELDS.map(([k, label, step]) => `
+              <div><label>${label}</label><input type="number" inputmode="decimal" step="${step}" value="${esc(p[k] ?? '')}"
+                oninput="setProfileValue('${c}','${k}',this.value)"></div>`).join('')}
+          </div>
+          <p class="hint" style="margin:0; font-size:11px;">Bett leer = globaler Wert. PA = Pressure/Linear Advance.</p>
+        </div>`;
+    }).join('');
+  }
+
+  // ---------------- Speichern ----------------
+  function storeLocal() {
+    collectForm();
+    const entry = clone(cur);
+    entry.updated = new Date().toISOString();
+    const i = spools.findIndex(s => s.id === cur.id);
+    if (i >= 0) spools[i] = entry; else spools.push(entry);
+    saveSpools();
+    journal({ op: 'spool', data: entry });
+    learnSuggestions();
+    dailyFileBackup();
+  }
+
+  // Neue Hersteller/Materialien/Farben automatisch in die Vorschlagslisten übernehmen
+  function learnSuggestions() {
+    let changed = false;
+    if (cur.brand && !settings.vendors.includes(cur.brand)) { settings.vendors.push(cur.brand); changed = true; }
+    if (cur.material && !settings.materials.includes(cur.material)) { settings.materials.push(cur.material); changed = true; }
+    if (cur.cn && !isHex(settings.colors[cur.cn])) { settings.colors[cur.cn] = cur.hex.toUpperCase(); changed = true; }
+    if (changed) { saveSettings(); refreshLists(); renderSettings(); }
+  }
+
+  function validate() {
+    if (!cur.id) { updateLog("Keine Spule geladen. Tag lesen oder 'Neue Spule'.", true); return false; }
+    collectForm();
+    if (!cur.brand || !cur.material) { updateLog("Bitte mindestens Hersteller und Material angeben.", true); return false; }
+    return true;
+  }
+
+  function saveLocalOnly() {
+    if (!validate()) return;
+    storeLocal();
+    updateLog(`Spule ${cur.id} lokal gespeichert (Tag nicht verändert).`);
+  }
+
+  async function saveToTag() {
+    if (!validate()) return;
+    const json = JSON.stringify(toTagJSON(cur));
+    const text = $('chkSummary').checked ? summaryText(cur) : null;
+    const size = ndefSize(json, text);
+    const cap = parseInt($('tagType').value);
+    if (size > cap) {
+      updateLog(`Zu groß für den Tag (${size}/${cap} Bytes). Zusammenfassung abwählen oder Profile reduzieren.`, true);
+      return;
+    }
+    storeLocal();
+    if (!("NDEFReader" in window)) { updateLog(`Lokal gespeichert. Web NFC hier nicht verfügbar (${size}/${cap} Bytes).`); return; }
+
+    const records = [{ recordType: "mime", mediaType: "application/json", data: new TextEncoder().encode(json) }];
+    if (text) records.push({ recordType: "text", lang: "en", data: text });
+    updateLog(`Lokal gespeichert. Jetzt Handy an den Tag halten… (${size}/${cap} Bytes)`);
+    try {
+      await (nfcReader || new NDEFReader()).write({ records });
+      updateLog(`✔ Auf Tag geschrieben und gespeichert (${size}/${cap} Bytes).`);
+    } catch (err) {
+      updateLog(`Lokal gespeichert, aber NFC-Schreibfehler: ${err.message || err}`, true);
+    }
+  }
+
+  // ---------------- NFC lesen ----------------
+  let nfcReader = null;
+
+  async function readNFC() {
+    if (!("NDEFReader" in window)) { updateLog("Web NFC nicht verfügbar – Chrome auf Android über https:// oder localhost nötig.", true); return; }
+    if (nfcReader) { updateLog("Scanner aktiv – Handy an die Spule halten…"); return; }
+    try {
+      nfcReader = new NDEFReader();
+      await nfcReader.scan();
+      updateLog("Scanner aktiv – Handy an die Spule halten…");
+      nfcReader.onreadingerror = () => updateLog("Tag nicht lesbar – nochmal versuchen.", true);
+      nfcReader.onreading = ev => handleTag(ev.message.records);
+    } catch (err) {
+      nfcReader = null;
+      updateLog("NFC-Fehler: " + (err.message || err), true);
+    }
+  }
+
+  function handleTag(records) {
+    let data = null;
+    for (const rec of records) {
+      try {
+        const isJsonMime = rec.recordType === "mime" && /json/i.test(rec.mediaType || "");
+        if (!isJsonMime && rec.recordType !== "text") continue;
+        const txt = new TextDecoder(rec.encoding || "utf-8").decode(rec.data);
+        const o = JSON.parse(txt);
+        if (o && (o.protocol === "openspool" || o.cfg)) { data = o; break; }
+      } catch (e) { /* kein JSON – nächsten Record probieren */ }
+    }
+    if (!data) { updateLog(records.length ? "Tag gelesen, aber kein Spulen-Format (OpenSpool) gefunden." : "Leerer Tag – 'Neue Spule' anlegen und schreiben.", true); return; }
+
+    cur = fromTagJSON(data);
+    // Bekannte Spule: Farbname aus dem Inventar übernehmen, falls der Farbwert nicht in der Farbliste steht
+    const inv = spools.find(s => s.id === cur.id);
+    if (!cur.cn && inv && inv.hex === cur.hex) cur.cn = inv.cn || "";
+    let note = "";
+    if (!cur.id) { cur.id = generateID(); note = " Fremder OpenSpool-Tag – neue ID vergeben, beim Speichern wird sie ergänzt."; }
+    $('numScaleWt').value = "";
+    renderForm();
+    switchTab('scanner', document.querySelector('.tab-btn'));
+    let known = spools.some(s => s.id === cur.id);
+    // Unbekannte Spule direkt ins Inventar – so lässt sich der Bestand nach Datenverlust
+    // einfach durch Abscannen aller Spulen wiederherstellen (alle wichtigen Daten stehen auf dem Tag).
+    if (!known && opts.autoAdd && !note) {
+      const entry = clone(cur); entry.updated = new Date().toISOString();
+      spools.push(entry); saveSpools(); journal({ op: 'spool', data: entry });
+      known = true; note = " Ins Inventar übernommen.";
+    }
+    updateLog(`Spule ${cur.id} gelesen: ${cur.brand} ${cur.material}.` + (known ? "" : " (noch nicht im Inventar)") + note);
+  }
+
+  // ---------------- Inventar ----------------
+  function renderInventory() {
+    const sel = $('invFilter');
+    const old = sel.value || 'all';
+    const mats = [...new Set(spools.map(s => s.material).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="all">Alle</option>' + mats.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+    sel.value = mats.includes(old) ? old : 'all';
+
+    const q = $('invSearch').value.trim().toLowerCase();
+    const list = spools.map((s, i) => ({ s, i }))
+      .filter(({ s }) => sel.value === 'all' || s.material === sel.value)
+      .filter(({ s }) => !q || [s.id, s.brand, s.material, s.cn].join(' ').toLowerCase().includes(q))
+      .sort((a, b) => (a.s.brand + a.s.material).localeCompare(b.s.brand + b.s.material));
+
+    if (!list.length) { $('inventoryList').innerHTML = "<p class='hint'>Keine Spulen gefunden.</p>"; return; }
+    const total = list.reduce((sum, { s }) => sum + num(s.r), 0);
+    $('inventoryList').innerHTML =
+      `<p class="hint">${list.length} Spule(n), zusammen ${Math.round(total)} g. Antippen zum Bearbeiten.</p>` +
+      list.map(({ s, i }) => `
+        <div class="card inventory-item">
+          <div class="row" style="cursor:pointer; flex:1;" onclick="loadFromInventory(${i})">
+            <span class="swatch" style="background:${esc(s.hex)}"></span>
+            <div>
+              <strong>${esc(s.brand)} ${esc(s.material)}${s.cn ? ' – ' + esc(s.cn) : ''}</strong>${s.abr ? ' ⚠' : ''}<br>
+              <span class="hint" style="font-size:12px;">ID ${esc(s.id)} · Rest ${esc(s.r)} g · ${esc(Object.keys(s.cfg || {}).join(', ') || 'keine Profile')}</span>
+            </div>
+          </div>
+          <button class="btn-danger btn-small" onclick="deleteSpool(${i})">✕</button>
+        </div>`).join('');
+  }
+
+  function loadFromInventory(i) {
+    if (!spools[i]) return;
+    cur = Object.assign(emptySpool(), clone(spools[i]));
+    delete cur.updated;
+    $('numScaleWt').value = "";
+    renderForm();
+    switchTab('scanner', document.querySelector('.tab-btn'));
+    updateLog(`Spule ${cur.id} aus dem Inventar geladen.`);
+  }
+
+  function deleteSpool(i) {
+    if (!confirm(`Spule ${spools[i].id} aus dem Inventar löschen? (Der Tag bleibt unverändert.)`)) return;
+    const id = spools[i].id;
+    spools.splice(i, 1);
+    saveSpools();
+    journal({ op: 'delete', id });
+    dailyFileBackup();
+    renderInventory();
+  }
+
+  // ---------------- Slicer-Export ----------------
+  function profileFor(code) {
+    collectForm();
+    const p = cur.cfg[code];
+    const printer = settings.printers[code] || { name: code, fw: "klipper" };
+    const { type } = splitMaterial(cur.material);
+    const bed = p.b ?? cur.bed;
+    const name = `${cur.brand} ${cur.material}${cur.cn ? ' ' + cur.cn : ''} @${printer.name}`;
+    return { p, printer, type, bed, name };
+  }
+
+  function exportProfile(code, kind) {
+    const { p, printer, type, bed, name } = profileFor(code);
+    const safe = name.replace(/[^\w\-. @äöüÄÖÜß]+/g, '_');
+    if (kind === 'prusa') {
+      // PrusaSlicer Config-Bundle: Datei > Importieren > Config-Bundle importieren
+      // Legt ein eigenes Filament-Preset an; nicht enthaltene Werte bekommen PrusaSlicer-Standardwerte.
+      const paCmd = { prusa: `M572 S${p.pa}`, marlin: `M900 K${p.pa}`, klipper: `SET_PRESSURE_ADVANCE ADVANCE=${p.pa}` }[printer.fw] || '';
+      const lines = [
+        `# Erzeugt von Filament NFC – Spule ${cur.id}`,
+        `[filament:${name}]`,
+        `filament_vendor = ${cur.brand}`,
+        `filament_type = ${type}`,
+        `filament_colour = ${cur.hex.toUpperCase()}`,
+        `temperature = ${p.t}`,
+        `first_layer_temperature = ${p.t}`,
+        `bed_temperature = ${bed}`,
+        `first_layer_bed_temperature = ${bed}`,
+        `extrusion_multiplier = ${p.f}`,
+        `filament_max_volumetric_speed = ${p.mf}`,
+        `filament_retract_length = ${p.rd}`,
+        `filament_retract_speed = ${p.rs}`,
+        `start_filament_gcode = "${p.pa ? paCmd : ''}"`,
+        `filament_notes = "Spule ${cur.id}${cur.abr ? ', abrasiv' : ''}"`,
+        ''
+      ];
+      download(`${safe}.ini`, lines.join('\n'), 'text/plain');
+    } else {
+      // OrcaSlicer: Datei > Importieren > Konfigurationen importieren
+      const o = {
+        type: "filament", name, from: "User", inherits: "", version: "2.3.0.0",
+        filament_settings_id: [name],
+        filament_vendor: [cur.brand],
+        filament_type: [type],
+        default_filament_colour: [cur.hex.toUpperCase()],
+        nozzle_temperature: [String(p.t)],
+        nozzle_temperature_initial_layer: [String(p.t)],
+        nozzle_temperature_range_low: [String(cur.tmin || p.t)],
+        nozzle_temperature_range_high: [String(cur.tmax || p.t)],
+        hot_plate_temp: [String(bed)], hot_plate_temp_initial_layer: [String(bed)],
+        textured_plate_temp: [String(bed)], textured_plate_temp_initial_layer: [String(bed)],
+        filament_flow_ratio: [String(p.f)],
+        enable_pressure_advance: [p.pa ? "1" : "0"],
+        pressure_advance: [String(p.pa)],
+        filament_max_volumetric_speed: [String(p.mf)],
+        filament_retraction_length: [String(p.rd)],
+        filament_retraction_speed: [String(p.rs)],
+        filament_notes: `Spule ${cur.id}${cur.abr ? ', abrasiv' : ''}`,
+        compatible_printers: []
+      };
+      download(`${safe}.json`, JSON.stringify(o, null, 4), 'application/json');
+    }
+    updateLog(`Profil "${name}" exportiert (Ordner Downloads).`);
+  }
+
+  function download(filename, content, mime) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+    a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  // ---------------- Verwaltung ----------------
+  function renderSettings() {
+    const listCard = (key, title, items, render) => `
+      <div class="card">
+        <h4>${title}</h4>
+        ${items.map(render).join('') || '<p class="hint">leer</p>'}
+      </div>`;
+
+    let html = '';
+    html += `
+      <div class="card">
+        <h4>Drucker</h4>
+        ${Object.entries(settings.printers).map(([code, p]) => `
+          <div class="list-row">
+            <span><b>${esc(code)}</b> ${esc(p.name)}<br><span class="hint" style="font-size:12px;">${esc(FW_LABELS[p.fw] || p.fw)}</span></span>
+            <button class="btn-danger btn-small" onclick="deletePrinter('${esc(code)}')">✕</button>
+          </div>`).join('')}
+        <div class="row" style="margin-top:10px; flex-wrap:wrap;">
+          <input type="text" id="addPrCode" placeholder="Code" maxlength="4" style="width:70px; margin:0;">
+          <input type="text" id="addPrName" placeholder="Name" style="flex:1; margin:0; min-width:120px;">
+          <select id="addPrFw" style="width:auto; margin:0;">
+            ${Object.entries(FW_LABELS).map(([k, l]) => `<option value="${k}">${l.split(' ')[0]}</option>`).join('')}
+          </select>
+          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addPrinter()">+</button>
+        </div>
+        <p class="hint" style="margin-bottom:0;">Der Code steht auf dem Tag (kurz halten). Die Firmware bestimmt den Pressure-Advance-Befehl im PrusaSlicer-Export.</p>
+      </div>`;
+
+    // Farben: Farbwert direkt antippen zum Ändern, unten neue Farbe anlegen
+    html += `
+      <div class="card">
+        <h4>Farben</h4>
+        ${Object.entries(settings.colors).map(([n, h]) => {
+          const ok = isHex(h);
+          return `
+          <div class="list-row">
+            <span class="row" style="flex:1;">
+              <input type="color" value="${ok ? esc(h) : '#808080'}" style="width:44px; height:34px; margin:0;"
+                onchange="setColorHex('${esc(n)}', this.value)">
+              <span>${esc(n)}<br><span class="hint" style="font-size:12px; ${ok ? '' : 'color:var(--danger)'}">${ok ? esc(h.toUpperCase()) : 'kein Farbwert – antippen zum Festlegen'}</span></span>
+            </span>
+            <button class="btn-danger btn-small" onclick="deleteListItem('colors','${esc(n)}')">✕</button>
+          </div>`;
+        }).join('')}
+        <label style="margin-top:10px;">Neue Farbe: Farbwert wählen, Namen vergeben</label>
+        <div class="row">
+          <input type="color" id="addColHex" value="#808080" style="width:56px; height:42px; margin:0;">
+          <input type="text" id="addColName" placeholder="z.B. Galaxy Lila" style="flex:1; margin:0;">
+          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addColor()">+</button>
+        </div>
+      </div>`;
+    const simpleCard = (key, title, ph) => `
+      <div class="card">
+        <h4>${title}</h4>
+        ${settings[key].map(v => `
+          <div class="list-row"><span>${esc(v)}</span><button class="btn-danger btn-small" onclick="deleteListItem('${key}','${esc(v)}')">✕</button></div>`).join('')}
+        <div class="row" style="margin-top:10px;">
+          <input type="text" id="add_${key}" placeholder="${ph}" style="flex:1; margin:0;">
+          <button class="btn-secondary btn-small" style="padding:10px 14px;" onclick="addListItem('${key}')">+</button>
+        </div>
+      </div>`;
+    html += simpleCard('vendors', 'Hersteller', 'z.B. Extrudr');
+    html += simpleCard('materials', 'Materialien', 'z.B. PETG HF');
+    html += `<p class="hint">Neue Hersteller, Materialien und Farben landen außerdem automatisch in den Listen, sobald du eine Spule damit speicherst.</p>`;
+    $('settingsSections').innerHTML = html;
+  }
+
+  function addPrinter() {
+    const code = $('addPrCode').value.trim().toUpperCase();
+    const name = $('addPrName').value.trim();
+    if (!code || !name) return;
+    if (!/^[A-Z0-9]+$/.test(code)) { alert("Code nur aus Buchstaben/Ziffern."); return; }
+    if (settings.printers[code] && !confirm(`Code ${code} existiert schon. Überschreiben?`)) return;
+    settings.printers[code] = { name, fw: $('addPrFw').value };
+    saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
+  }
+
+  function deletePrinter(code) {
+    const used = spools.filter(s => s.cfg && s.cfg[code]).length;
+    if (!confirm(used ? `${code} wird von ${used} Spule(n) verwendet. Trotzdem löschen? (Profile auf den Spulen bleiben erhalten)` : `Drucker ${code} löschen?`)) return;
+    delete settings.printers[code];
+    saveSettings(); refreshLists(); renderSettings(); renderPrinterCards();
+  }
+
+  const isHex = h => /^#[0-9a-f]{6}$/i.test(String(h || ''));
+
+  function setColorHex(name, hex) {
+    settings.colors[name] = hex.toUpperCase();
+    saveSettings(); refreshLists(); renderSettings();
+  }
+
+  function addColor() {
+    const name = $('addColName').value.trim();
+    const hex = $('addColHex').value.toUpperCase();
+    if (!name) { alert("Bitte einen Namen für die Farbe eingeben."); return; }
+    const same = colorNameForHex(hex);
+    if (same && same !== name && !confirm(`Der Farbwert ${hex} heißt schon "${same}". Trotzdem zusätzlich als "${name}" anlegen?`)) return;
+    if (settings.colors[name] && !confirm(`"${name}" existiert schon (${settings.colors[name]}). Farbwert überschreiben?`)) return;
+    settings.colors[name] = hex;
+    saveSettings(); refreshLists(); renderSettings();
+  }
+
+  function addListItem(key) {
+    const v = $('add_' + key).value.trim();
+    if (!v || settings[key].includes(v)) return;
+    settings[key].push(v);
+    settings[key].sort((a, b) => a.localeCompare(b));
+    saveSettings(); refreshLists(); renderSettings();
+  }
+
+  // Farbwert im Spulen-Formular geändert -> passenden Namen vorschlagen
+  function colorHexChanged() {
+    const name = colorNameForHex($('inColorHex').value);
+    const curName = $('inColorName').value.trim();
+    if (name && (!curName || settings.colors[curName])) $('inColorName').value = name;
+    updateSizeInfo();
+  }
+
+  function deleteListItem(key, value) {
+    if (key === 'colors') delete settings.colors[value];
+    else settings[key] = settings[key].filter(v => v !== value);
+    saveSettings(); refreshLists(); renderSettings();
+  }
+
+  // ---------------- Backup ----------------
+  function exportBackup() {
+    const data = { app: "filament-nfc", version: 2, exported: new Date().toISOString(), settings, spools };
+    download(`filament-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 2), 'application/json');
+  }
+
+  async function importBackup(file) {
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (!data.settings || !Array.isArray(data.spools)) throw new Error("Keine gültige Backup-Datei");
+      if (!confirm(`Backup vom ${data.exported || '?'} mit ${data.spools.length} Spule(n) importieren? Aktuelle Daten werden ersetzt.`)) return;
+      settings = data.settings;
+      for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
+      spools = data.spools;
+      saveSettings(); saveSpools(); initApp();
+      sendSnapshot(true);
+      alert("Backup importiert.");
+    } catch (e) { alert("Import fehlgeschlagen: " + e.message); }
+    finally { $('importFile').value = ""; }
+  }
+
+  // Formular-Änderungen live in die Größenanzeige übernehmen
+  document.addEventListener('input', e => { if (e.target.closest('#scanner') && e.target.type !== 'checkbox') updateSizeInfo(); });
+
+  // ===================================================================
+  // AUTO-BACKUP über filament_server.py (Termux)
+  // Jede Änderung geht als Journal-Eintrag an den Server (inkrementell),
+  // einmal täglich zusätzlich ein Vollstand. Ist der Server nicht erreichbar,
+  // werden Einträge gesammelt und später nachgeschickt.
+  // ===================================================================
+  let backupServer = false;
+  let pending = loadJSON('fnfc_pending', []);
+
+  function journal(entry) {
+    entry.ts = new Date().toISOString();
+    pending.push(entry);
+    localStorage.setItem('fnfc_pending', JSON.stringify(pending));
+    flushJournal();
+  }
+
+  async function flushJournal() {
+    if (!backupServer || !pending.length) { showBackupStatus(); return; }
+    const batch = pending.slice();
+    try {
+      const r = await fetch('/api/journal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(batch) });
+      if (!r.ok) throw new Error(r.status);
+      pending = pending.slice(batch.length);
+      localStorage.setItem('fnfc_pending', JSON.stringify(pending));
+    } catch (e) { /* Server weg – bleibt in der Warteschlange */ }
+    showBackupStatus();
+  }
+
+  async function sendSnapshot(manual = false) {
+    if (!backupServer) return;
+    const data = { app: "filament-nfc", version: 2, exported: new Date().toISOString(), settings, spools };
+    try {
+      const r = await fetch('/api/snapshot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      const res = await r.json();
+      localStorage.setItem('fnfc_lastSnapshot', data.exported.slice(0, 10));
+      showBackupStatus();
+      if (manual) alert('Vollsicherung gespeichert: backups/' + res.file);
+    } catch (e) { if (manual) alert('Sicherung fehlgeschlagen: ' + e.message); }
+  }
+
+  function showBackupStatus() {
+    const el = $('autoBackupStatus');
+    if (!el) return;
+    // Termux-Server ist optional: Status nur zeigen, wenn er läuft oder Änderungen warten
+    el.style.display = (backupServer || pending.length) ? '' : 'none';
+    const last = localStorage.getItem('fnfc_lastSnapshot') || '–';
+    if (backupServer) {
+      el.innerHTML = `✔ Auto-Backup aktiv · letzte Vollsicherung: ${esc(last)}` +
+        (pending.length ? ` · <span style="color:#ffc107">${pending.length} Änderung(en) warten</span>` : ' · alle Änderungen gesichert');
+      $('btnSnapshot').style.display = '';
+    } else {
+      el.innerHTML = `Termux-Server nicht erreichbar.` +
+        (pending.length ? ` ${pending.length} Änderung(en) werden nachgeholt, sobald er läuft.` : '');
+      $('btnSnapshot').style.display = 'none';
+    }
+  }
+
+  async function initBackup() {
+    try {
+      const r = await fetch('/api/ping', { cache: 'no-store' });
+      backupServer = r.ok && (await r.json()).ok === true;
+    } catch (e) { backupServer = false; }
+    showBackupStatus();
+    if (!backupServer) return;
+
+    // Browserdaten gelöscht? Dann Stand vom Handy anbieten.
+    if (!spools.length && !localStorage.getItem('fnfc_settings')) {
+      try {
+        const state = await (await fetch('/api/state', { cache: 'no-store' })).json();
+        if (state.spools && state.spools.length &&
+            confirm(`Keine lokalen Daten, aber eine Sicherung mit ${state.spools.length} Spule(n) gefunden. Wiederherstellen?`)) {
+          if (state.settings) settings = state.settings;
+          for (const k in DEFAULT_SETTINGS) if (!settings[k]) settings[k] = clone(DEFAULT_SETTINGS[k]);
+          spools = state.spools;
+          localStorage.setItem('fnfc_settings', JSON.stringify(settings));
+          saveSpools();
+          initApp();
+        }
+      } catch (e) { /* keine Sicherung vorhanden */ }
+    }
+
+    await flushJournal();
+    const today = new Date().toISOString().slice(0, 10);
+    if (localStorage.getItem('fnfc_lastSnapshot') !== today && (spools.length || localStorage.getItem('fnfc_settings'))) sendSnapshot();
+  }
+
+  // ===================================================================
+  // Speicherung ohne Server
+  // ===================================================================
+  let opts = Object.assign({ dailyFile: true, autoAdd: true }, loadJSON('fnfc_opts', {}));
+  function setOpt(k, v) { opts[k] = v; localStorage.setItem('fnfc_opts', JSON.stringify(opts)); showStorageStatus(); }
+
+  // Ohne Server darf ein Browser nicht still Dateien schreiben – ein Download direkt nach
+  // einem Tippen auf "Speichern" ist aber erlaubt. Daher: höchstens eine Datei pro Tag.
+  function dailyFileBackup() {
+    if (!opts.dailyFile || backupServer) return;   // mit Termux-Server sichert der Server
+    const today = new Date().toISOString().slice(0, 10);
+    if (localStorage.getItem('fnfc_lastFile') === today) return;
+    exportBackup();
+    localStorage.setItem('fnfc_lastFile', today);
+    showStorageStatus();
+  }
+
+  let persisted = null;
+  async function showStorageStatus() {
+    $('optDailyFile').checked = !!opts.dailyFile;
+    $('optAutoAdd').checked = !!opts.autoAdd;
+    const last = localStorage.getItem('fnfc_lastFile') || 'noch keine';
+    $('storageStatus').innerHTML =
+      (persisted ? '✔ Daten dauerhaft gespeichert (Android löscht sie nicht bei Speichermangel).'
+                 : '⚠ Speicher nicht als dauerhaft markiert – App über „Installieren“ hinzufügen.') +
+      `<br>Letzte Sicherungsdatei: ${esc(last)} · ${spools.length} Spule(n) im Inventar`;
+  }
+
+  async function initStorage() {
+    try {
+      if (navigator.storage && navigator.storage.persist) {
+        persisted = await navigator.storage.persisted() || await navigator.storage.persist();
+      }
+    } catch (e) { persisted = false; }
+    showStorageStatus();
+  }
+
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  initApp();
+  initStorage();
+  initBackup();
+</script>
+</body>
+</html>
